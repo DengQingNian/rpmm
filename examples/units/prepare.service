@@ -1,0 +1,8 @@
+# 示例：执行一次准备步骤，保留成功状态。
+[Unit]
+Description=示例准备任务
+
+[Service]
+Type=oneshot
+ExecStart=C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -Command "Write-Output '准备完成'"
+RemainAfterExit=yes

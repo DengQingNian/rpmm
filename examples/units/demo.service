@@ -1,0 +1,15 @@
+# 示例：前台运行，每五秒写入标准输出。
+[Unit]
+Description=示例长期任务
+Requires=prepare.service
+After=prepare.service
+
+[Service]
+Type=exec
+Environment="MESSAGE=rpmm 托管示例"
+ExecStart=C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -NonInteractive -Command "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); while ($$true) { Write-Output $$env:MESSAGE; Start-Sleep -Seconds 5 }"
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
