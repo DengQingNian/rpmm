@@ -1,9 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256">
-  <title>rpmm 服务编排图标</title>
-  <!-- 按生成稿规范化为纯色矢量：六边形管理核心连接三个服务节点，背景透明。 -->
-  <path d="M128 144V52M128 144L40 204M128 144L216 204" fill="none" stroke="#3B82F6" stroke-width="12" stroke-linecap="round" />
+  <title>rpmm 小尺寸单色图标</title>
+  <!-- 小尺寸加粗连接线并统一蓝色，保持与主图相同的核心及三节点轮廓。 -->
+  <path d="M128 144V52M128 144L40 204M128 144L216 204" fill="none" stroke="#0A84FF" stroke-width="20" stroke-linecap="round" />
   <path d="M134 94L168 114Q174 118 174 125V163Q174 170 168 174L134 194Q128 198 122 194L88 174Q82 170 82 163V125Q82 118 88 114L122 94Q128 90 134 94Z" fill="#0A84FF" />
-  <g fill="#67E8F9">
+  <g fill="#0A84FF">
     <circle cx="128" cy="52" r="24" />
     <circle cx="40" cy="204" r="24" />
     <circle cx="216" cy="204" r="24" />

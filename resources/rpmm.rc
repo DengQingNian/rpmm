@@ -1,0 +1,2 @@
+// 命令行程序与桌面程序共用包含七档尺寸的应用图标。
+1 ICON "src-tauri/icons/icon.ico"

@@ -31,7 +31,7 @@ cargo test -p rpmm --all-features
 
 桌面程序位于 `target/release/rpmm-desktop.exe`，NSIS 安装包位于 `target/release/bundle/nsis/`。安装包按当前用户安装。单独构建 CLI 使用 `cargo build -p rpmm --release`，生成 `target/release/rpmm.exe`。`test-fixtures` 仅为 Windows 集成测试构建辅助程序；生产构建不需要此 feature。所有测试数据、调试日志保存在 `temp/`。
 
-应用标识为 `com.dengqn.app.rpmm`。图标使用“主节点连接两个子进程节点”的图形，源文件为 `ui/assets/icon.svg`，界面标志和页签直接引用该源文件。修改后执行 `npm run icons` 更新 `src-tauri/icons/` 中的窗口、托盘及安装包资源，再执行 `npm run tauri build` 重新打包；生成过程的中间文件位于 `temp/icon-build/`。
+应用标识为 `com.dengqn.app.rpmm`。图标采用透明背景、蓝色圆角六边形核心与三个青色服务节点，体现统一编排多个服务。界面标志引用 `ui/assets/icon.svg`；页签和托盘使用同轮廓的单色加粗版本 `ui/assets/icon-small.svg`。修改后执行 `npm run icons` 更新 `src-tauri/icons/` 中的 PNG、ICO、ICNS 和商店资源，再执行 `npm run tauri build` 重新打包。ICO 包含 16/24/32/48/64/128/256 七档尺寸，托盘直接嵌入 32 px 单色 PNG。独立 CLI 的 `build.rs` 使用 `embed-resource` 把同一 ICO 嵌入 `rpmm.exe`，执行 `cargo build -p rpmm --release` 更新。生成过程的中间文件位于 `temp/icon-build/`，设计来源和生成提示词见 [图标说明](docs/icons.md)。
 
 ## 桌面使用
 

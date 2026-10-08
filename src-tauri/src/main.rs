@@ -305,7 +305,8 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "退出并停止所有子进程", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &quit])?;
     TrayIconBuilder::with_id("rpmm")
-        .icon(app.default_window_icon().expect("应用图标必须存在").clone())
+        // 托盘直接使用加粗的单色小图，避免系统缩放大图时丢失细线和节点对比度。
+        .icon(tauri::include_image!("icons/32x32.png"))
         .tooltip("rpmm · 子进程管理器")
         .menu(&menu)
         .show_menu_on_left_click(false)
