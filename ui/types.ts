@@ -24,6 +24,7 @@ export interface Preferences {
 /** 桌面设置及数据根目录。 */
 export interface Settings {
   root: string;
+  next_root: string;
   preferences: Preferences;
   autostart: boolean;
 }
@@ -35,7 +36,18 @@ export interface LogRecord {
   instance: number;
 }
 /** 新建子进程表单。 */
-export interface ProcessDraft {
+export interface ServiceDraft {
+  after: string[];
+  before: string[];
+  requires: string[];
+  wants: string[];
+  healthAfter: string[];
+  stdoutDirectory: string;
+  memoryMax: number | null;
+  cpuQuota: number | null;
+}
+/** 新建子进程表单及关联、资源限制。 */
+export interface ProcessDraft extends ServiceDraft {
   name: string;
   description: string;
   executable: string;

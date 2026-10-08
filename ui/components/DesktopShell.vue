@@ -72,9 +72,6 @@ async function submitDropin(): Promise<void> {
           ><small>本地进程工作台</small>
         </div>
       </div>
-      <div class="notebook-caption">
-        工作空间 <AppIcon name="arrow" :size="22" />
-      </div>
       <nav aria-label="主导航">
         <button
           v-for="page in pages"
@@ -185,6 +182,7 @@ async function submitDropin(): Promise<void> {
     <ProcessForm
       :busy="desktop.locked.value"
       :visible="desktop.state.createVisible"
+      :services="desktop.state.statuses.map(item => item.name)"
       @create="desktop.createProcess"
       @cancel="desktop.state.createVisible = false"
   /></NModal>

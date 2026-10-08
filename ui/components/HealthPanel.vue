@@ -90,7 +90,7 @@ const enabled = computed(() =>
     description="未配置健康检查，可在子进程配置中启用"
     class="empty"
   />
-  <h3>检查历史 <small>最近 100 次，包含历史实例</small></h3>
+  <h3>检查历史 <small>本次运行最近 100 次，包含历史实例，不写日志</small></h3>
   <div class="table-scroll health-history">
     <table class="resource-table">
       <thead>

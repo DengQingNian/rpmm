@@ -267,6 +267,16 @@ pub mod win {
             block.push(0);
             let (out_read, out_write) = pipe()?;
             let (err_read, err_write) = pipe()?;
+            let output = unit
+                .stdout_directory
+                .as_ref()
+                .map(|directory| {
+                    std::fs::create_dir_all(directory)?;
+                    std::fs::OpenOptions::new().create(true).append(true).open(
+                        std::path::Path::new(directory).join(format!("{}.stdout.log", unit.name)),
+                    )
+                })
+                .transpose()?;
             let security = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 bInheritHandle: true.into(),
@@ -301,13 +311,18 @@ pub mod win {
                     lpAttributeList: attrs.list,
                 };
                 let job = Handle(CreateJobObjectW(None, PCWSTR::null()).map_err(crate::operation)?);
-                let limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+                let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
                     BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
                         LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
                         ..Default::default()
                     },
                     ..Default::default()
                 };
+                // 内存额度约束整个进程树的提交内存，阻止超过额度的新分配。
+                if let Some(maximum) = unit.memory_max {
+                    limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+                    limits.JobMemoryLimit = maximum;
+                }
                 SetInformationJobObject(
                     job.0,
                     JobObjectExtendedLimitInformation,
@@ -315,6 +330,22 @@ pub mod win {
                     std::mem::size_of_val(&limits) as u32,
                 )
                 .map_err(crate::operation)?;
+                if let Some(percent) = unit.cpu_quota {
+                    let cpu = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION {
+                        ControlFlags: JOB_OBJECT_CPU_RATE_CONTROL_ENABLE
+                            | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+                        Anonymous: JOBOBJECT_CPU_RATE_CONTROL_INFORMATION_0 {
+                            CpuRate: percent * 100,
+                        },
+                    };
+                    SetInformationJobObject(
+                        job.0,
+                        JobObjectCpuRateControlInformation,
+                        &cpu as *const _ as *const _,
+                        std::mem::size_of_val(&cpu) as u32,
+                    )
+                    .map_err(crate::operation)?;
+                }
                 let mut info = PROCESS_INFORMATION::default();
                 CreateProcessW(
                     PCWSTR(executable.as_ptr()),
@@ -345,13 +376,15 @@ pub mod win {
                 drop(out_write);
                 drop(err_write);
                 let mut readers = vec![];
-                for (read, source) in [(out_read, "stdout"), (err_read, "stderr")] {
+                for (read, source, output) in
+                    [(out_read, "stdout", output), (err_read, "stderr", None)]
+                {
                     let file = File::from_raw_handle(read.0.0);
                     std::mem::forget(read);
                     let logger = logger.clone();
                     let name = unit.name.clone();
                     readers.push(std::thread::spawn(move || {
-                        logger.drain(file, &name, instance, source)
+                        logger.drain_to(file, &name, instance, source, output)
                     }));
                 }
                 Ok(Box::new(Child {

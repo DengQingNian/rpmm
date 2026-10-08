@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { NButton, NSelect, NSwitch } from "naive-ui";
+import { NButton, NInput, NSelect, NSwitch } from "naive-ui";
 import { computed } from "vue";
 import type { useDesktop } from "../composables/useDesktop";
 import AppIcon from "./AppIcon.vue";
@@ -76,19 +76,17 @@ const refreshOptions = computed(() =>
     <section class="paper settings-panel">
       <div class="panel-heading">
         <div>
-          <span class="eyebrow">本地工作空间</span>
           <h2>数据与托盘</h2>
         </div>
         <AppIcon name="home" />
       </div>
       <div class="setting-block">
         <strong>数据目录</strong
-        ><code>{{
-          desktop.state.settings?.root || "请使用桌面应用读取数据目录"
-        }}</code>
+        ><NInput v-model:value="desktop.state.settingsDraft.root" :disabled="desktop.locked.value || !desktop.state.settings" placeholder="输入 Windows 绝对路径" />
+        <NButton :disabled="desktop.locked.value || !desktop.state.settings" @click="desktop.chooseRoot">选择文件夹</NButton>
+        <p>当前使用：{{ desktop.state.settings?.root || "请通过桌面应用读取" }}</p>
         <p>
-          包含 units 配置、state 状态和 logs 日志。使用 --root
-          参数可指定其他目录。
+          包含 units 配置、state 状态和 logs 日志。点击“保存设置”后，下次启动应用时使用新目录。已有数据不自动搬迁，可通过配置导出和导入转移服务。显式 --root 参数优先。
         </p>
       </div>
       <div class="setting-block">

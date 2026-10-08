@@ -103,6 +103,65 @@ fn argv_roundtrip() {
     assert_eq!(values, expected);
 }
 
+/// 验证真实父子进程继承同一 CPU/内存硬额度。参数：无。返回：无。
+#[test]
+fn native_job_limits_apply_to_process_tree() {
+    let root = root("limits");
+    let logger = Logger::new(&root.join("logs")).unwrap();
+    let mut unit = unit("tree-limits");
+    unit.memory_max = Some(128 * 1024 * 1024);
+    unit.cpu_quota = Some(25);
+    let child = Native
+        .spawn(&unit, &unit.exec_start[0], 1, None, &logger)
+        .unwrap();
+    assert_eq!(wait(child.as_ref()), 0);
+    drop(child);
+    let output = logger
+        .tail("app.service", Some("stdout"), 100)
+        .unwrap()
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect::<String>();
+    let records: Vec<serde_json::Value> = output
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 2);
+    for record in records {
+        assert_eq!(record["memory"], 128 * 1024 * 1024);
+        assert_eq!(record["cpu"], 2500);
+        assert_eq!(record["memory_enabled"], true);
+        assert_eq!(record["cpu_enabled"], true);
+    }
+}
+
+/// 验证指定输出目录自动创建、原始 UTF-8 内容追加且仍可查询运行日志。参数：无。返回：无。
+#[test]
+fn stdout_directory_appends_raw_output() {
+    let root = root("stdout-directory");
+    let logger = Logger::new(&root.join("logs")).unwrap();
+    let output = root.join("custom/output files");
+    let mut unit = unit("args");
+    unit.exec_start[0].push("中文输出".into());
+    unit.stdout_directory = Some(output.display().to_string());
+    for instance in 1..=2 {
+        let child = Native
+            .spawn(&unit, &unit.exec_start[0], instance, None, &logger)
+            .unwrap();
+        assert_eq!(wait(child.as_ref()), 0);
+        drop(child);
+    }
+    let text = std::fs::read_to_string(output.join("app.service.stdout.log")).unwrap();
+    assert_eq!(text, "[\"中文输出\"]\n[\"中文输出\"]\n");
+    let logs = logger
+        .tail("app.service", Some("stdout"), 100)
+        .unwrap()
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect::<String>();
+    assert_eq!(logs, text);
+}
+
 /// 验证 UTF-16 环境块和指定工作目录传入实际进程。参数：无。返回：无。
 #[test]
 fn environment_and_working_directory() {

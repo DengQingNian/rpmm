@@ -219,3 +219,196 @@ fn failed_atomic_replace_cleans_pending_file() {
     assert!(target.is_dir());
     assert_eq!(std::fs::read_dir(root.join("units")).unwrap().count(), 1);
 }
+
+/// 构建单服务配置包。参数：name 为名称，text 为正文，enabled 为启用状态。返回：版本一配置包。
+fn bundle(name: &str, text: &str, enabled: bool) -> desktop::ConfigBundle {
+    desktop::ConfigBundle {
+        format: "rpmm-config".into(),
+        version: 1,
+        services: vec![desktop::ServiceBundle {
+            name: name.into(),
+            enabled,
+            documents: vec![desktop::Document {
+                name: name.into(),
+                text: text.into(),
+            }],
+        }],
+    }
+}
+
+/// 验证下次启动目录选择独立持久化并拒绝相对路径，全部数据隔离在 temp。参数：无。返回：无。
+#[test]
+fn data_directory_selection_roundtrip() {
+    let default = root();
+    let target = root();
+    assert_eq!(desktop::load_root_selection(&default).unwrap(), default);
+    desktop::save_root_selection(&default, &target).unwrap();
+    assert_eq!(desktop::load_root_selection(&default).unwrap(), target);
+    assert!(desktop::save_root_selection(&default, std::path::Path::new("relative")).is_err());
+    assert_eq!(desktop::load_root_selection(&default).unwrap(), target);
+    std::fs::write(default.join("state/data-root.json"), "\"relative\"").unwrap();
+    assert!(desktop::load_root_selection(&default).is_err());
+}
+
+/// 验证多服务包、依赖和覆盖文件可以跨目录往返，启用状态保持一致。参数：无。返回：无。
+#[tokio::test]
+async fn config_bundle_roundtrip() {
+    let source = root();
+    let manager = Manager::new(&source).unwrap();
+    manager
+        .save_document("db.service", BASE, None)
+        .await
+        .unwrap();
+    manager
+        .save_document(
+            "app.service",
+            &format!("[Unit]\nRequires=db.service\nAfter=db.service\n{BASE}"),
+            None,
+        )
+        .await
+        .unwrap();
+    manager
+        .save_document(
+            "app.service.d/20-local.conf",
+            "[Service]\nRestart=always\nMemoryMax=512M\nCPUQuota=25%\n",
+            None,
+        )
+        .await
+        .unwrap();
+    manager.enable("app.service", true).await.unwrap();
+    let exported = desktop::export_bundle(&source, &manager.status(None).unwrap()).unwrap();
+    let json = serde_json::to_vec(&exported).unwrap();
+    let target = root();
+    let restored = Manager::new(&target).unwrap();
+    restored
+        .import_bundle(serde_json::from_slice(&json).unwrap(), false)
+        .await
+        .unwrap();
+    let unit = restored.unit_snapshot("app.service").unwrap();
+    assert_eq!(unit.restart, config::Restart::Always);
+    assert_eq!(unit.memory_max, Some(512 * 1024 * 1024));
+    assert_eq!(unit.cpu_quota, Some(25));
+    assert!(restored.status(Some("app.service")).unwrap()[0].enabled);
+    assert_eq!(
+        desktop::documents(&source, "app.service")
+            .unwrap()
+            .iter()
+            .map(|d| (&d.name, &d.text))
+            .collect::<Vec<_>>(),
+        desktop::documents(&target, "app.service")
+            .unwrap()
+            .iter()
+            .map(|d| (&d.name, &d.text))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// 验证冲突默认拒绝，明确替换会移除包内未包含的旧覆盖文件。参数：无。返回：无。
+#[tokio::test]
+async fn bundle_conflict_and_replacement() {
+    let root = root();
+    let manager = Manager::new(&root).unwrap();
+    manager
+        .save_document("app.service", BASE, None)
+        .await
+        .unwrap();
+    manager
+        .save_document(
+            "app.service.d/stale.conf",
+            "[Service]\nRestart=always\n",
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        manager
+            .import_bundle(bundle("app.service", BASE, false), false)
+            .await
+            .is_err()
+    );
+    assert!(root.join("units/app.service.d/stale.conf").exists());
+    manager
+        .import_bundle(bundle("app.service", BASE, false), true)
+        .await
+        .unwrap();
+    assert!(!root.join("units/app.service.d/stale.conf").exists());
+    assert_eq!(
+        manager.unit_snapshot("app.service").unwrap().restart,
+        config::Restart::No
+    );
+}
+
+/// 验证导入整包先校验，错误图、路径穿越和版本均不会部分落盘。参数：无。返回：无。
+#[tokio::test]
+async fn invalid_bundles_never_partially_commit() {
+    let root = root();
+    let manager = Manager::new(&root).unwrap();
+    let mut invalid = bundle("a.service", BASE, false);
+    invalid.services.push(desktop::ServiceBundle {
+        name: "b.service".into(),
+        enabled: false,
+        documents: vec![desktop::Document {
+            name: "b.service".into(),
+            text: "[Unit]\nRequires=missing.service\n[Service]\nExecStart=C:/app.exe\n".into(),
+        }],
+    });
+    assert!(manager.import_bundle(invalid, false).await.is_err());
+    assert!(!root.join("units/a.service").exists());
+    let mut invalid = bundle("a.service", BASE, false);
+    invalid.services[0].documents[0].name = "../a.service".into();
+    assert!(manager.import_bundle(invalid, false).await.is_err());
+    let mut invalid = bundle("a.service", BASE, false);
+    invalid.version = 2;
+    assert!(manager.import_bundle(invalid, false).await.is_err());
+    assert!(manager.status(None).unwrap().is_empty());
+}
+
+/// 验证导入写盘失败恢复已修改的主配置，运行定义不变。参数：无。返回：无。
+#[tokio::test]
+#[cfg(windows)]
+async fn bundle_disk_failure_rolls_back() {
+    let root = root();
+    let manager = Manager::new(&root).unwrap();
+    manager
+        .save_document("app.service", BASE, None)
+        .await
+        .unwrap();
+    manager
+        .save_document("z.service", BASE, None)
+        .await
+        .unwrap();
+    // 允许读原文但拒绝删除第二份配置，确保第一份已写入后提交才失败。
+    use std::os::windows::fs::OpenOptionsExt;
+    let _blocked = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(root.join("units/z.service"))
+        .unwrap();
+    let mut imported = bundle(
+        "app.service",
+        &BASE.replace("Restart=no", "Restart=always"),
+        false,
+    );
+    imported.services.extend(
+        bundle(
+            "z.service",
+            &BASE.replace("Restart=no", "Restart=always"),
+            false,
+        )
+        .services,
+    );
+    let error = manager
+        .import_bundle(imported, true)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("恢复配置失败"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("units/app.service")).unwrap(),
+        BASE
+    );
+    assert_eq!(
+        manager.unit_snapshot("app.service").unwrap().restart,
+        config::Restart::No
+    );
+}

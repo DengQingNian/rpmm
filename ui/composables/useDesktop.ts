@@ -2,6 +2,7 @@ import { computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useDialog, useMessage } from "naive-ui";
+import { applyService, readService, serviceDefaults, serviceText } from "../serviceConfig";
 import type {
   ConfigDocument,
   LogRecord,
@@ -49,7 +50,10 @@ export function useDesktop() {
     editorLoading: false,
     quitting: false,
     settings: null as Settings | null,
-    settingsDraft: { autostart: false, start_hidden: false, refresh_ms: 1000 },
+    settingsDraft: { autostart: false, start_hidden: false, refresh_ms: 1000, root: "" },
+    serviceDraft: serviceDefaults(),
+    exportUnits: [] as string[],
+    importOverwrite: false,
     detailTab: "logs",
     search: "",
     logSource: "",
@@ -241,16 +245,15 @@ export function useDesktop() {
     if (!isTauri() || disposed) return;
     const unit = state.selected;
     const generation = ++metricsGeneration;
-    const wantsResources =
-      state.page === "monitor" && state.detailTab === "resources";
+    const wantsResources = !!unit;
     try {
       state.healthStatuses = await call<HealthStatus[]>("health_status");
-      if (state.page === "dashboard" || wantsResources) {
+      {
         const result = await call<{
           host: HostMetrics;
           process: ProcessResources | null;
           instance: number | null;
-        }>("metrics", { unit: wantsResources ? unit : null });
+        }>("metrics", { unit: unit || null, details: state.page === "monitor" && state.detailTab === "resources" });
         if (disposed || generation !== metricsGeneration) return;
         state.host = result.host;
         const host = result.host;
@@ -466,7 +469,7 @@ export function useDesktop() {
       ? draft.name
       : `${draft.name}.service`;
     // 表单只生成基础配置，完整语义及依赖仍由后端统一校验。
-    const text = `[Unit]\nDescription=${draft.description.replaceAll("%", "%%")}\n\n[Service]\nType=simple\nExecStart=${quote(draft.executable.replaceAll("%", "%%"))}${draft.args ? ` ${draft.args}` : ""}\n${draft.directory ? `WorkingDirectory=${draft.directory.replaceAll("\\", "/").replaceAll("%", "%%")}\n` : ""}Restart=${draft.restart}\nRestartSec=${draft.delay}\n\n[Install]\nWantedBy=multi-user.target\n`;
+    const text = `[Unit]\nDescription=${draft.description.replaceAll("%", "%%")}\n\n[Service]\nType=simple\nExecStart=${quote(draft.executable.replaceAll("%", "%%"))}${draft.args ? ` ${draft.args}` : ""}\n${draft.directory ? `WorkingDirectory=${draft.directory.replaceAll("\\", "/").replaceAll("%", "%%")}\n` : ""}Restart=${draft.restart}\nRestartSec=${draft.delay}\n\n[Install]\nWantedBy=multi-user.target\n\n${serviceText(draft)}`;
     await mutate(async () => {
       await call("save_document", { name, text, expected: null });
       state.createVisible = false;
@@ -564,6 +567,42 @@ export function useDesktop() {
     );
   }
   watch(() => state.text, syncHealthDraft);
+  watch(() => state.text, (text) => Object.assign(state.serviceDraft, readService(text)));
+
+  /** 将关联和运行选项写入编辑草稿。参数：无。返回：无。 */
+  function applyOptions(): void {
+    if (locked.value || state.editorLoading || !state.document) return;
+    state.text = applyService(state.text, state.serviceDraft);
+    message.info("关联与运行选项已写入草稿，请保存配置");
+  }
+
+  /** 通过系统对话框选择下次启动的数据目录。参数：无。返回：无。 */
+  async function chooseRoot(): Promise<void> {
+    try {
+      const root = await call<string | null>("choose_directory");
+      if (root) state.settingsDraft.root = root;
+    } catch (error) { report(error); }
+  }
+
+  /** 导出多选服务的已保存配置。参数：无。返回：无。 */
+  async function exportConfigs(): Promise<void> {
+    if (locked.value || !state.exportUnits.length) return;
+    await mutate(async () => {
+      const path = await call<string | null>("export_configs", { units: state.exportUnits });
+      if (path) message.info(`配置已导出：${path}`);
+    }, "导出操作结束");
+  }
+
+  /** 导入配置包并重新读取编辑器。参数：无。返回：无。
+   * 放弃草稿和替换同名服务各自确认，取消文件选择不会改变编辑内容。 */
+  async function importConfigs(): Promise<void> {
+    if (locked.value || !(await mayDiscard())) return;
+    if (state.importOverwrite && !(await confirm("替换同名服务配置？", "导入包中的同名服务将替换主配置、覆盖文件和启用状态；运行实例重启后应用。", "替换并导入"))) return;
+    await mutate(async () => {
+      const version = await call<number | null>("import_configs", { overwrite: state.importOverwrite });
+      if (version !== null && state.selected) await loadDocuments(state.selected);
+    }, "导入操作结束");
+  }
 
   /** 安装独立日志轮询。参数：无。返回：无；零间隔为暂停。 */
   function scheduleLogs(): void {
@@ -621,9 +660,10 @@ export function useDesktop() {
   /** 保存桌面启动设置。参数：无。返回：无。 */
   async function saveSettings(): Promise<void> {
     await mutate(async () => {
-      const { autostart, start_hidden, refresh_ms } = state.settingsDraft;
+      const { autostart, start_hidden, refresh_ms, root } = state.settingsDraft;
       await call("save_settings", {
         autostart,
+        root,
         preferences: { start_hidden, refresh_ms },
       });
       state.settings = await call<Settings>("settings");
@@ -675,6 +715,7 @@ export function useDesktop() {
       state.settings = await call<Settings>("settings");
       Object.assign(state.settingsDraft, state.settings.preferences, {
         autostart: state.settings.autostart,
+        root: state.settings.next_root,
       });
       await refresh();
       await updateLogs();
@@ -709,6 +750,10 @@ export function useDesktop() {
     updateLogs,
     downloadLogs,
     applyHealth,
+    applyOptions,
+    chooseRoot,
+    exportConfigs,
+    importConfigs,
     preview: !isTauri(),
     refresh,
     selectProcess,

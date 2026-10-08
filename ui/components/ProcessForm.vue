@@ -11,7 +11,9 @@ import {
   type FormRules,
 } from "naive-ui";
 import type { ProcessDraft } from "../types";
-const props = defineProps<{ busy: boolean; visible: boolean }>();
+import { serviceDefaults } from "../serviceConfig";
+import ServiceOptionsForm from "./ServiceOptionsForm.vue";
+const props = defineProps<{ busy: boolean; visible: boolean; services: string[] }>();
 const emit = defineEmits<{ create: [draft: ProcessDraft]; cancel: [] }>();
 const form = ref<FormInst | null>(null);
 const shaking = ref(false);
@@ -44,6 +46,7 @@ const rules: FormRules = {
 /** 创建初始表单。参数：无。返回：默认进程草稿。 */
 function emptyDraft(): ProcessDraft {
   return {
+    ...serviceDefaults(),
     name: "",
     description: "",
     executable: "",
@@ -121,6 +124,7 @@ async function submit(): Promise<void> {
         ><NInput v-model:value="draft.delay"
       /></NFormItem>
     </div>
+    <ServiceOptionsForm :draft="draft" :services="services" :current="draft.name" :disabled="busy" />
     <NCheckbox v-model:checked="draft.enabled">随 rpmm 启动此子进程</NCheckbox>
     <p class="form-note">创建后不会立即启动，可在监控页面点击启动。</p>
     <div class="dialog-actions">

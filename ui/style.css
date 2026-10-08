@@ -75,17 +75,6 @@ button:focus-visible {
   color: #79746b;
   letter-spacing: 2px;
 }
-.notebook-caption {
-  margin: 42px 0 18px 9px;
-  color: #79746b;
-  font-size: 11px;
-  letter-spacing: 2px;
-}
-.notebook-caption > .app-icon {
-  float: right;
-  margin-top: -6px;
-  margin-right: 18px;
-}
 nav {
   display: grid;
   gap: 10px;
@@ -532,6 +521,13 @@ dd {
   padding-top: 20px;
   border-top: 1px dashed #b2a99b;
 }
+.config-guide > .n-select,
+.config-guide > .n-button,
+.config-guide > .n-checkbox {
+  display: flex;
+  width: 100%;
+  margin-top: 12px;
+}
 .config-guide p,
 .syntax-help p {
   font-size: 12px;
@@ -664,6 +660,8 @@ footer {
   width: min(560px, calc(100vw - 60px));
   border: 2px dashed #625d54;
   box-shadow: 3px 3px 0 rgba(44, 44, 44, 0.25);
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
 }
 .small-modal {
   width: min(430px, calc(100vw - 60px));

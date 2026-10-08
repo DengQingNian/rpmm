@@ -20,7 +20,7 @@ pub fn start_plan(units: &Units, roots: &[String]) -> Result<Plan> {
         let unit = units
             .get(&name)
             .ok_or_else(|| Error::Config(format!("缺少 unit：{name}")))?;
-        for required in &unit.requires {
+        for required in unit.requires.iter().chain(&unit.health_after) {
             if !units.contains_key(required) {
                 return Err(Error::Config(format!(
                     "{name} 缺少 required unit：{required}"
@@ -52,7 +52,7 @@ pub fn order(units: &Units, selected: &BTreeSet<String>) -> Result<Vec<Vec<Strin
         let unit = units
             .get(name)
             .ok_or_else(|| Error::Config(format!("排序集合缺少 unit：{name}")))?;
-        for dep in &unit.after {
+        for dep in unit.after.iter().chain(&unit.health_after) {
             if selected.contains(dep) {
                 edges.get_mut(name).unwrap().insert(dep.clone());
             }
@@ -96,7 +96,11 @@ pub fn stop_set(units: &Units, roots: &[String]) -> BTreeSet<String> {
         let additions: Vec<_> = units
             .iter()
             .filter(|(n, u)| {
-                !selected.contains(*n) && u.requires.iter().any(|d| selected.contains(d))
+                !selected.contains(*n)
+                    && u.requires
+                        .iter()
+                        .chain(&u.health_after)
+                        .any(|d| selected.contains(d))
             })
             .map(|(n, _)| n.clone())
             .collect();

@@ -482,7 +482,7 @@ fn streamed_utf8_survives_invalid_prefix() {
 
 /// 验证后台健康检查独立于界面运行、记录历史，并在停止及重启时隔离实例。参数：无。返回：无。
 #[tokio::test]
-async fn health_monitor_tracks_instances_and_persists() {
+async fn health_monitor_tracks_instances_without_logging() {
     let root = root();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -509,12 +509,16 @@ async fn health_monitor_tracks_instances_and_persists() {
     let first = manager.status(Some("a.service")).unwrap()[0].instance;
     manager.stop(&["a.service".into()]).await.unwrap();
     assert!(manager.health_status().unwrap()[0]["latest"].is_null());
-    let records = manager
-        .logger
-        .tail("a.service", Some("health"), 100)
-        .unwrap();
+    let records = manager.health_history("a.service").unwrap();
     assert!(!records.is_empty());
     assert_eq!(records[0].instance, first);
+    assert!(
+        manager
+            .logger
+            .tail("a.service", Some("health"), 100)
+            .unwrap()
+            .is_empty()
+    );
     let original = std::fs::read_to_string(root.join("units/a.service")).unwrap();
     let changed = original.replace("HealthType=tcp", "HealthType=none");
     manager
@@ -531,5 +535,126 @@ async fn health_monitor_tracks_instances_and_persists() {
         manager.status(Some("a.service")).unwrap()[0].instance,
         first
     );
+    manager.shutdown().await.unwrap();
+}
+
+/// 验证依赖不健康时不启动消费者，探测成功后启动，并且显式停止向消费者传播。参数：无。返回：无。
+#[tokio::test]
+async fn health_dependency_waits_for_readiness() {
+    let root = root();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (accepted, acceptance) = tokio::sync::oneshot::channel();
+    let (release, readiness) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0; 4096];
+        assert!(stream.read(&mut request).await.unwrap() > 0);
+        accepted.send(()).unwrap();
+        readiness.await.unwrap();
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+    });
+    write(
+        &root,
+        "db.service",
+        &format!(
+            "[Service]\nExecStart=C:/fake.exe\nHealthType=http\nHealthUrl=http://{address}/health\nHealthIntervalSec=1s\n"
+        ),
+    );
+    write(
+        &root,
+        "app.service",
+        "[Unit]\nHealthAfter=db.service\n[Service]\nExecStart=C:/fake.exe\nTimeoutStartSec=3s\n",
+    );
+    let fake = Arc::new(Fake::default());
+    let manager = Manager::with_backend(&root, fake.clone()).unwrap();
+    let pending = manager.clone();
+    let started = tokio::spawn(async move { pending.start(&["app.service".into()]).await });
+    tokio::time::timeout(Duration::from_secs(3), acceptance)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !fake
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e == "spawn:app.service")
+    );
+    release.send(()).unwrap();
+    started.await.unwrap().unwrap();
+    server.await.unwrap();
+    assert!(
+        manager
+            .health_status()
+            .unwrap()
+            .iter()
+            .find(|v| v["unit"] == "db.service")
+            .unwrap()["latest"]["healthy"]
+            .as_bool()
+            .unwrap()
+    );
+    assert_eq!(
+        &fake.events.lock().unwrap()[..2],
+        &["spawn:db.service", "spawn:app.service"]
+    );
+    manager.stop(&["db.service".into()]).await.unwrap();
+    expect(&manager, "app.service", State::Inactive).await;
+    manager.shutdown().await.unwrap();
+}
+
+/// 验证健康等待超时不创建消费者，停止请求能取消尚未启动的消费者。参数：无。返回：无。
+#[tokio::test]
+async fn unhealthy_dependencies_timeout_and_cancel() {
+    let root = root();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    write(
+        &root,
+        "db.service",
+        &format!(
+            "[Service]\nExecStart=C:/fake.exe\nHealthType=tcp\nHealthPort={port}\nHealthIntervalSec=1s\n"
+        ),
+    );
+    let original =
+        "[Unit]\nHealthAfter=db.service\n[Service]\nExecStart=C:/fake.exe\nTimeoutStartSec=200ms\n";
+    write(&root, "app.service", original);
+    let fake = Arc::new(Fake::default());
+    let manager = Manager::with_backend(&root, fake.clone()).unwrap();
+    assert!(manager.start(&["app.service".into()]).await.is_err());
+    assert!(
+        !fake
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|e| e == "spawn:app.service")
+    );
+    assert_eq!(
+        manager.status(Some("app.service")).unwrap()[0].substate,
+        "dependency-unhealthy"
+    );
+    manager
+        .save_document(
+            "app.service",
+            &original.replace("200ms", "30s"),
+            Some(original),
+        )
+        .await
+        .unwrap();
+    let pending = manager.clone();
+    let start = tokio::spawn(async move { pending.start(&["app.service".into()]).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(3), manager.stop(&["db.service".into()]))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(start.await.unwrap().is_err());
     manager.shutdown().await.unwrap();
 }

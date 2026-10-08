@@ -36,6 +36,7 @@ struct Args {
 struct DesktopState {
     manager: Arc<Manager>,
     preferences: Mutex<Preferences>,
+    next_root: Mutex<PathBuf>,
     settings_lock: tokio::sync::Mutex<()>,
     stop: watch::Sender<bool>,
     quitting: AtomicBool,
@@ -45,6 +46,7 @@ struct DesktopState {
 #[derive(Serialize)]
 struct Settings {
     root: String,
+    next_root: String,
     preferences: Preferences,
     autostart: bool,
 }
@@ -138,11 +140,12 @@ async fn logs(
         .map_err(|error| error.to_string())
 }
 
-/// 获取整机与进程资源。参数：state 为共享状态，unit 为可选托管名称。返回：资源快照和采集诊断。
+/// 获取整机与进程资源。参数：state 为共享状态，unit 为可选托管名称，details 表示是否读取连接明细。返回：资源快照和采集诊断。
 #[tauri::command]
 async fn metrics(
     state: State<'_, DesktopState>,
     unit: Option<String>,
+    details: bool,
 ) -> Result<serde_json::Value, String> {
     let selected = unit
         .as_deref()
@@ -158,7 +161,7 @@ async fn metrics(
     tauri::async_runtime::spawn_blocking(move || {
         let pid = selected.as_ref().and_then(|(status, _)| status.pid);
         let (host, mut process) = collector.lock().unwrap().sample(pid);
-        if let Some(resources) = process.as_mut() {
+        if details && let Some(resources) = process.as_mut() {
             if resources.environment.is_empty() && let Some((_, definition)) = &selected {
                 resources.environment = rpmm::platform::environment(definition);
                 resources.environment_source = "启动配置与继承环境快照（进程内部修改不在此列）".into();
@@ -181,25 +184,117 @@ fn health_status(state: State<'_, DesktopState>) -> Result<Vec<serde_json::Value
     state.manager.health_status().map_err(|e| e.to_string())
 }
 
-/// 查询持久化探测历史。参数：state 为管理器，unit 为托管名称。返回：最近一百次探测结果。
+/// 查询独立探测历史。参数：state 为管理器，unit 为托管名称。返回：最近一百次内存探测结果。
 #[tauri::command]
 async fn health_history(
     state: State<'_, DesktopState>,
     unit: String,
 ) -> Result<Vec<rpmm::health::HealthRecord>, String> {
-    rpmm::config::validate_name(&unit).map_err(|e| e.to_string())?;
-    let logger = state.manager.logger.clone();
+    state
+        .manager
+        .health_history(&unit)
+        .map_err(|e| e.to_string())
+}
+
+/// 导出多选服务配置。参数：app/state 为上下文，units 为选中服务。返回：保存路径或取消。
+#[tauri::command]
+async fn export_configs(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    units: Vec<String>,
+) -> Result<Option<String>, String> {
+    let statuses = units
+        .iter()
+        .map(|name| state.manager.status(Some(name)).map(|mut v| v.remove(0)))
+        .collect::<rpmm::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let bundle =
+        desktop::export_bundle(&state.manager.root, &statuses).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string())?;
+    if bytes.len() > 16 * 1024 * 1024 {
+        return Err("配置包超过 16 MiB，请减少导出的服务数量".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
-        logger.tail(&unit, Some("health"), 100).map(|records| {
-            records
-                .into_iter()
-                .filter_map(|r| serde_json::from_str(&r.text).ok())
-                .collect()
-        })
+        let Some(file) = app
+            .dialog()
+            .file()
+            .set_title("导出服务配置")
+            .set_file_name("rpmm-config.json")
+            .add_filter("结构化配置", &["json"])
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let path = file.into_path().map_err(|e| e.to_string())?;
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(Some(path.display().to_string()))
     })
     .await
     .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())
+}
+
+/// 从系统对话框导入完整配置包。参数：app/state 为上下文，overwrite 为是否替换同名服务。返回：版本或取消。
+#[tauri::command]
+async fn import_configs(
+    app: tauri::AppHandle,
+    state: State<'_, DesktopState>,
+    overwrite: bool,
+) -> Result<Option<u64>, String> {
+    let bundle = tauri::async_runtime::spawn_blocking(move || {
+        use std::io::Read;
+        let Some(file) = app
+            .dialog()
+            .file()
+            .set_title("导入服务配置")
+            .add_filter("结构化配置", &["json"])
+            .blocking_pick_file()
+        else {
+            return Ok(None);
+        };
+        let path = file.into_path().map_err(|e| e.to_string())?;
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)
+            .map_err(|e| e.to_string())?
+            .take(16 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > 16 * 1024 * 1024 {
+            return Err("配置包超过 16 MiB".to_string());
+        }
+        serde_json::from_slice::<desktop::ConfigBundle>(&bytes)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    match bundle {
+        Some(bundle) => state
+            .manager
+            .import_bundle(bundle, overwrite)
+            .await
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
+}
+
+/// 选择目录。参数：app 为窗口上下文。返回：绝对目录或取消。
+#[tauri::command]
+async fn choose_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("选择目录")
+            .blocking_pick_folder()
+            .map(|file| {
+                file.into_path()
+                    .map(|path| path.display().to_string())
+                    .map_err(|e| e.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 导出当前日志结果到用户选定文件。参数：app 为窗口应用，unit 为名称，text 为显示快照。返回：保存路径或取消。
@@ -237,34 +332,70 @@ async fn export_logs(
 fn settings(state: State<'_, DesktopState>) -> Result<Settings, String> {
     Ok(Settings {
         root: state.manager.root.display().to_string(),
+        next_root: state.next_root.lock().unwrap().display().to_string(),
         preferences: state.preferences.lock().unwrap().clone(),
         autostart: desktop::startup::is_enabled().map_err(|error| error.to_string())?,
     })
 }
 
-/// 保存设置及当前用户自启动。参数：state 为上下文，preferences/autostart 为候选值。返回：结果。
+/// 保存设置及当前用户自启动。参数：state 为上下文，preferences/autostart/root 为偏好、自启动及下次启动目录。返回：结果。
 #[tauri::command]
 async fn save_settings(
     state: State<'_, DesktopState>,
     preferences: Preferences,
     autostart: bool,
+    root: String,
 ) -> Result<(), String> {
     let _guard = state.settings_lock.lock().await;
     desktop::validate_preferences(&preferences).map_err(|error| error.to_string())?;
+    let root = PathBuf::from(root);
+    if !root.is_absolute() {
+        return Err("数据目录必须为绝对路径".into());
+    }
+    // 新目录先验证配置与写入权限；正在运行的管理器保持当前目录，下次启动切换。
+    Manager::new(&root).map_err(|error| error.to_string())?;
     let previous = desktop::startup::snapshot().map_err(|error| error.to_string())?;
     let executable = std::env::current_exe().map_err(|error| error.to_string())?;
-    let command = desktop::autostart_command(&executable, &state.manager.root);
+    let command = desktop::autostart_command(&executable, &root);
+    let mut snapshots = std::collections::BTreeMap::new();
+    for path in [
+        root.join("state/desktop.json"),
+        state.manager.root.join("state/desktop.json"),
+        desktop::default_root().join("state/data-root.json"),
+    ] {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+        };
+        snapshots.insert(path, bytes);
+    }
     let result = desktop::startup::set_enabled(autostart, &command)
-        .and_then(|()| desktop::save_preferences(&state.manager.root, &preferences));
-    // 设置写盘失败时恢复自启动状态，并在回滚失败时给出完整诊断。
+        .and_then(|()| desktop::save_preferences(&root, &preferences))
+        .and_then(|()| desktop::save_preferences(&state.manager.root, &preferences))
+        .and_then(|()| desktop::save_root(&root));
+    // 设置写盘失败时恢复偏好、目录选择和自启动状态，完整报告恢复失败。
     if let Err(error) = result {
-        let rollback = desktop::startup::restore(previous);
-        return Err(match rollback {
-            Ok(()) => error.to_string(),
-            Err(rollback) => format!("{error}；恢复自启动失败：{rollback}"),
-        });
+        let mut errors = vec![error.to_string()];
+        for (path, bytes) in snapshots {
+            let restored = if let Some(bytes) = bytes {
+                rpmm::manager::atomic_write(&path, &bytes)
+            } else if path.exists() {
+                std::fs::remove_file(path).map_err(rpmm::Error::from)
+            } else {
+                Ok(())
+            };
+            if let Err(error) = restored {
+                errors.push(format!("恢复设置失败：{error}"));
+            }
+        }
+        if let Err(error) = desktop::startup::restore(previous) {
+            errors.push(format!("恢复自启动失败：{error}"));
+        }
+        return Err(errors.join("；"));
     }
     *state.preferences.lock().unwrap() = preferences;
+    *state.next_root.lock().unwrap() = root;
     Ok(())
 }
 
@@ -334,8 +465,11 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 /// 初始化桌面、后台监督与退出协调。参数：无，读取命令行。返回：无。
 fn main() {
     let args = Args::parse();
-    let root = std::path::absolute(args.root.unwrap_or_else(desktop::default_root))
-        .expect("无法解析数据目录");
+    let root = std::path::absolute(
+        args.root
+            .unwrap_or_else(|| desktop::configured_root().expect("无法读取数据目录设置")),
+    )
+    .expect("无法解析数据目录");
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -352,6 +486,9 @@ fn main() {
             health_status,
             health_history,
             export_logs,
+            export_configs,
+            import_configs,
+            choose_directory,
             settings,
             save_settings,
             hide_window,
@@ -369,6 +506,7 @@ fn main() {
             app.manage(DesktopState {
                 manager,
                 preferences: Mutex::new(preferences),
+                next_root: Mutex::new(root.clone()),
                 settings_lock: tokio::sync::Mutex::new(()),
                 stop,
                 quitting: AtomicBool::new(false),

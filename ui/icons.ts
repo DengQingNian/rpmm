@@ -6,7 +6,6 @@ import {
   Minimize,
   Download,
   LayoutDashboard,
-  ArrowDownRight,
   Circle,
   CircleCheck,
   FileCog,
@@ -58,7 +57,6 @@ export const icons = {
   home: House,
   quit: LogOut,
   search: Search,
-  arrow: ArrowDownRight,
   dirty: Circle,
   synced: CircleCheck,
 } as const;

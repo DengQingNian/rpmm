@@ -5,6 +5,17 @@ fn main() {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("args") => println!("{}", serde_json::to_string(&args[1..]).unwrap()),
+        #[cfg(windows)]
+        Some("limits") => report_limits(),
+        #[cfg(windows)]
+        Some("tree-limits") => {
+            report_limits();
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("limits")
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
         Some("exit") => std::process::exit(args[1].parse().unwrap()),
         Some("env") => println!(
             "{}",
@@ -36,5 +47,37 @@ fn main() {
             let _ = child.wait();
         }
         _ => std::thread::sleep(Duration::from_secs(120)),
+    }
+}
+
+/// 输出当前进程继承的 Windows Job 资源额度。参数：无。返回：无；查询失败令辅助程序退出失败。
+#[cfg(windows)]
+fn report_limits() {
+    use windows::Win32::System::JobObjects::*;
+    let mut memory = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    let mut cpu = JOBOBJECT_CPU_RATE_CONTROL_INFORMATION::default();
+    unsafe {
+        QueryInformationJobObject(
+            None,
+            JobObjectExtendedLimitInformation,
+            &mut memory as *mut _ as *mut _,
+            std::mem::size_of_val(&memory) as u32,
+            None,
+        )
+        .unwrap();
+        QueryInformationJobObject(
+            None,
+            JobObjectCpuRateControlInformation,
+            &mut cpu as *mut _ as *mut _,
+            std::mem::size_of_val(&cpu) as u32,
+            None,
+        )
+        .unwrap();
+        println!(
+            "{}",
+            serde_json::json!({"memory": memory.JobMemoryLimit, "cpu": cpu.Anonymous.CpuRate,
+            "memory_enabled": memory.BasicLimitInformation.LimitFlags.contains(JOB_OBJECT_LIMIT_JOB_MEMORY),
+            "cpu_enabled": cpu.ControlFlags == JOB_OBJECT_CPU_RATE_CONTROL_ENABLE | JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP})
+        );
     }
 }

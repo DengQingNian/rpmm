@@ -65,6 +65,8 @@ pub struct Manager {
     generation: AtomicU64,
     serial: AtomicU64,
     health_records: Mutex<BTreeMap<String, crate::health::HealthRecord>>,
+    health_history:
+        Mutex<BTreeMap<String, std::collections::VecDeque<crate::health::HealthRecord>>>,
 }
 
 impl Manager {
@@ -102,6 +104,7 @@ impl Manager {
             generation: AtomicU64::new(1),
             serial: AtomicU64::new(1),
             health_records: Mutex::new(BTreeMap::new()),
+            health_history: Mutex::new(BTreeMap::new()),
         }))
     }
     /// 获取一致状态快照。参数：name 为可选 unit 名。返回：状态列表。
@@ -159,6 +162,62 @@ impl Manager {
             Ok(serde_json::json!({ "unit": status.name, "config": unit.health, "latest": record }))
         }).collect()
     }
+    /// 读取独立的有界健康历史。参数：name 为服务名称。返回：最近一百次内存记录，应用退出后清空。
+    pub fn health_history(&self, name: &str) -> Result<Vec<crate::health::HealthRecord>> {
+        config::validate_name(name)?;
+        Ok(self
+            .health_history
+            .lock()
+            .unwrap()
+            .get(name)
+            .map(|h| h.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+    /// 等待前置服务当前实例健康。参数：unit 为待启动定义。返回：就绪、超时、取消或配置诊断。
+    async fn wait_healthy(&self, unit: &Unit) -> Result<()> {
+        if unit.health_after.is_empty()
+            || self
+                .status(Some(&unit.name))
+                .is_ok_and(|statuses| statuses[0].state == State::Active)
+        {
+            return Ok(());
+        }
+        let deadline = Instant::now() + unit.timeout_start.unwrap_or(Duration::from_secs(90));
+        // 等待不持有状态锁；每次核对当前实例，停止请求可以取消整个启动事务。
+        loop {
+            if self.abort.load(Ordering::SeqCst) || self.shutting_down.load(Ordering::SeqCst) {
+                return Err(Error::Operation("健康依赖等待已取消".into()));
+            }
+            let mut ready = true;
+            for name in &unit.health_after {
+                let dependency = self.unit_snapshot(name)?;
+                if !matches!(dependency.health.kind.as_str(), "tcp" | "http") {
+                    return Err(Error::Config(format!("健康前置服务 {name} 未启用健康检查")));
+                }
+                let status = self.status(Some(name))?.remove(0);
+                if matches!(status.state, State::Failed | State::Inactive) {
+                    return Err(Error::Operation(format!("健康前置服务 {name} 未运行")));
+                }
+                ready &= status.state == State::Active
+                    && self
+                        .health_records
+                        .lock()
+                        .unwrap()
+                        .get(name)
+                        .is_some_and(|record| record.instance == status.instance && record.healthy);
+            }
+            if ready {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Operation(format!(
+                    "{} 等待前置服务健康超时",
+                    unit.name
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
     /// 按运行快照后台探测并记录结果。参数：self 为管理器，unit/task 为配置和监督所有权。返回：任务结束时返回。
     async fn monitor_health(self: Arc<Self>, unit: Unit, task: u64) {
         let Ok(client) = reqwest::Client::builder()
@@ -194,10 +253,11 @@ impl Manager {
                         .lock()
                         .unwrap()
                         .insert(unit.name.clone(), record.clone());
-                    if let Ok(text) = serde_json::to_string(&record) {
-                        let _ = self
-                            .logger
-                            .write(&unit.name, record.instance, "health", &text);
+                    let mut histories = self.health_history.lock().unwrap();
+                    let history = histories.entry(unit.name.clone()).or_default();
+                    history.push_back(record);
+                    while history.len() > 100 {
+                        history.pop_front();
                     }
                 }
             }
@@ -257,7 +317,19 @@ impl Manager {
                 let manager = self.clone();
                 tasks.push((
                     name,
-                    tokio::spawn(async move { manager.start_one(unit).await }),
+                    tokio::spawn(async move {
+                        if let Err(error) = manager.wait_healthy(&unit).await {
+                            manager.mark_failed(&unit, "dependency-unhealthy");
+                            if let Some(status) =
+                                manager.statuses.lock().unwrap().get_mut(&unit.name)
+                                && status.state == State::Failed
+                            {
+                                status.reason = Some(error.to_string());
+                            }
+                            return Err(error);
+                        }
+                        manager.start_one(unit).await
+                    }),
                 ));
             }
             for (name, task) in tasks {
@@ -789,6 +861,126 @@ impl Manager {
         self.validate_candidate(&candidate)?;
         std::fs::create_dir_all(path.parent().unwrap())?;
         atomic_write(&path, text.as_bytes())?;
+        Ok(self.apply_candidate(candidate))
+    }
+    /// 整包校验后导入配置并重载。参数：bundle 为配置包，overwrite 为是否允许替换同名服务。返回：新版本；磁盘失败时恢复原文。
+    pub async fn import_bundle(
+        &self,
+        bundle: crate::desktop::ConfigBundle,
+        overwrite: bool,
+    ) -> Result<u64> {
+        let _guard = self.transaction.lock().await;
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err(Error::Operation("管理器正在关闭".into()));
+        }
+        if bundle.format != "rpmm-config" || bundle.version != 1 || bundle.services.is_empty() {
+            return Err(Error::Config("不支持的配置包格式或版本，或没有服务".into()));
+        }
+        let directory = self.root.join("units");
+        let mut candidate = config::load(&directory)?;
+        let mut enabled = self.enabled.lock().unwrap().clone();
+        let mut changes = BTreeMap::<String, Option<String>>::new();
+        let mut selected = BTreeSet::<String>::new();
+        // 先在内存中合并整个包，允许同批服务相互依赖；所有路径及图检查均在写盘前完成。
+        for service in bundle.services {
+            config::validate_name(&service.name)?;
+            if !selected.insert(service.name.to_ascii_lowercase()) {
+                return Err(Error::Config("配置包含重复服务".into()));
+            }
+            if candidate.contains_key(&service.name) {
+                if !overwrite {
+                    return Err(Error::Config(format!(
+                        "服务已存在：{}；请启用替换同名服务",
+                        service.name
+                    )));
+                }
+                for document in crate::desktop::documents(&self.root, &service.name)? {
+                    changes.insert(document.name, None);
+                }
+            }
+            let mut names = BTreeSet::new();
+            for document in &service.documents {
+                crate::desktop::document_path(&directory, &document.name)?;
+                crate::desktop::validate_text(&document.text)?;
+                if document.name != service.name
+                    && !document.name.starts_with(&format!("{}.d/", service.name))
+                {
+                    return Err(Error::Config("配置文档不属于声明的服务".into()));
+                }
+                if !names.insert(document.name.to_ascii_lowercase()) {
+                    return Err(Error::Config("配置包含重复文档".into()));
+                }
+                changes.insert(document.name.clone(), Some(document.text.clone()));
+            }
+            if !service
+                .documents
+                .iter()
+                .any(|document| document.name == service.name)
+            {
+                return Err(Error::Config("配置包缺少主配置".into()));
+            }
+            let unit = config::parse_documents(&service.name, &service.documents)?;
+            if service.enabled && unit.wanted_by.is_empty() {
+                return Err(Error::Config("启用的服务缺少 WantedBy".into()));
+            }
+            if service.enabled {
+                enabled.insert(service.name.clone());
+            } else {
+                enabled.remove(&service.name);
+            }
+            candidate.insert(service.name, unit);
+        }
+        let mut folded = BTreeSet::new();
+        for name in candidate.keys() {
+            if !folded.insert(name.to_ascii_lowercase()) {
+                return Err(Error::Config("服务名称大小写冲突".into()));
+            }
+        }
+        self.validate_candidate(&candidate)?;
+        graph::start_plan(&candidate, &candidate.keys().cloned().collect::<Vec<_>>())?;
+        let mut previous = BTreeMap::new();
+        for name in changes.keys() {
+            previous.insert(
+                name.clone(),
+                crate::desktop::read_optional(&crate::desktop::document_path(&directory, name)?)?,
+            );
+        }
+        let enabled_path = self.root.join("state/enabled.json");
+        let mut applied = Vec::new();
+        let commit = (|| -> Result<()> {
+            for (name, text) in &changes {
+                let path = crate::desktop::document_path(&directory, name)?;
+                if let Some(text) = text {
+                    std::fs::create_dir_all(path.parent().unwrap())?;
+                    atomic_write(&path, text.as_bytes())?;
+                } else if path.exists() {
+                    std::fs::remove_file(path)?;
+                }
+                applied.push(name.clone());
+            }
+            // 启用状态最后原子提交，提交失败时无需恢复尚未变化的启用状态。
+            atomic_write(&enabled_path, &serde_json::to_vec_pretty(&enabled)?)
+        })();
+        if let Err(error) = commit {
+            let mut errors = vec![error.to_string()];
+            // 逆序恢复实际完成的修改，避免触碰导致提交失败但尚未变化的文件。
+            for name in applied.iter().rev() {
+                let text = previous.get(name).unwrap();
+                let path = directory.join(name);
+                let restored = if let Some(text) = text {
+                    atomic_write(&path, text.as_bytes())
+                } else if path.exists() {
+                    std::fs::remove_file(path).map_err(Error::from)
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = restored {
+                    errors.push(format!("恢复配置失败：{error}"));
+                }
+            }
+            return Err(Error::Operation(errors.join("；")));
+        }
+        *self.enabled.lock().unwrap() = enabled;
         Ok(self.apply_candidate(candidate))
     }
     /// 持久化开机成员关系，不立即启停。参数：name 和 enable 为名称及动作。返回：结果。

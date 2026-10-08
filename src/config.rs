@@ -39,6 +39,14 @@ pub struct Unit {
     pub wants: Vec<String>,
     pub after: Vec<String>,
     pub before: Vec<String>,
+    #[serde(default)]
+    pub health_after: Vec<String>,
+    #[serde(default)]
+    pub stdout_directory: Option<String>,
+    #[serde(default)]
+    pub memory_max: Option<usize>,
+    #[serde(default)]
+    pub cpu_quota: Option<u32>,
     pub service_type: ServiceType,
     pub exec_start: Vec<Vec<String>>,
     pub exec_stop: Vec<Vec<String>>,
@@ -70,6 +78,10 @@ impl Unit {
             wants: vec![],
             after: vec![],
             before: vec![],
+            health_after: vec![],
+            stdout_directory: None,
+            memory_max: None,
+            cpu_quota: None,
             service_type: ServiceType::Simple,
             exec_start: vec![],
             exec_stop: vec![],
@@ -496,6 +508,67 @@ fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
     }
     let defaults = Unit::new(&unit.name);
     match (section, key) {
+        ("Unit", "HealthAfter") => {
+            if value.is_empty() {
+                unit.health_after.clear();
+            }
+            for name in words(value)? {
+                validate_name(&name)?;
+                if !unit.health_after.contains(&name) {
+                    unit.health_after.push(name);
+                }
+            }
+        }
+        ("Service", "StandardOutputDirectory") => {
+            let value = specifiers(value, &unit.name)?;
+            if !value.is_empty() && !windows_absolute(&value) {
+                return Err(Error::Config(
+                    "StandardOutputDirectory 必须为绝对路径".into(),
+                ));
+            }
+            unit.stdout_directory = (!value.is_empty()).then_some(value);
+        }
+        ("Service", "MemoryMax") => {
+            unit.memory_max = if value.is_empty() || value == "infinity" {
+                None
+            } else {
+                let (number, multiplier) = match value.as_bytes().last() {
+                    Some(b'K') => (&value[..value.len() - 1], 1024usize),
+                    Some(b'M') => (&value[..value.len() - 1], 1024usize.pow(2)),
+                    Some(b'G') => (&value[..value.len() - 1], 1024usize.pow(3)),
+                    _ => (value, 1),
+                };
+                Some(
+                    number
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|n| n.checked_mul(multiplier))
+                        .filter(|n| *n > 0)
+                        .ok_or_else(|| {
+                            Error::Config(
+                                "MemoryMax 必须为正整数字节数或 K/M/G，或 infinity".into(),
+                            )
+                        })?,
+                )
+            };
+        }
+        ("Service", "CPUQuota") => {
+            unit.cpu_quota = if value.is_empty() {
+                None
+            } else {
+                Some(
+                    value
+                        .strip_suffix('%')
+                        .unwrap_or(value)
+                        .parse::<u32>()
+                        .ok()
+                        .filter(|n| (1..=100).contains(n))
+                        .ok_or_else(|| {
+                            Error::Config("CPUQuota 必须为 1%～100% 的整机 CPU 上限".into())
+                        })?,
+                )
+            };
+        }
         ("Service", "HealthType") => unit.health.kind = value.into(),
         ("Service", "HealthPort") => {
             unit.health.port = if value.is_empty() {
@@ -670,6 +743,21 @@ fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
         _ => return Err(Error::Config(format!("不支持的指令：[{section}] {key}"))),
     }
     Ok(())
+}
+
+/// 合并结构化配置包中的文档。参数：name 为服务名，documents 为主配置与覆盖文件。返回：校验后的定义。
+pub fn parse_documents(name: &str, documents: &[crate::desktop::Document]) -> Result<Unit> {
+    let mut unit = Unit::new(name);
+    let mut ordered: Vec<_> = documents.iter().collect();
+    ordered.sort_by_key(|document| (document.name != name, &document.name));
+    for document in ordered {
+        merge(&mut unit, &document.name, &document.text)?;
+    }
+    if unit.service_type == ServiceType::Oneshot && !unit.timeout_start_set {
+        unit.timeout_start = None;
+    }
+    validate(&unit)?;
+    Ok(unit)
 }
 
 /// 校验最终合并定义。参数：unit 为定义。返回：结果。

@@ -153,7 +153,18 @@ impl Logger {
         Ok(records)
     }
     /// 持续读取一个进程管道。参数：reader 和记录上下文。返回：无；异常写入生命周期日志。
-    pub fn drain(&self, mut reader: impl Read, unit: &str, instance: u64, source: &str) {
+    pub fn drain(&self, reader: impl Read, unit: &str, instance: u64, source: &str) {
+        self.drain_to(reader, unit, instance, source, None);
+    }
+    /// 排空管道并可选追加原始输出文件。参数：reader 为管道，unit/instance/source 为上下文，output 为输出文件。返回：无；文件异常后仍排空管道。
+    pub fn drain_to(
+        &self,
+        mut reader: impl Read,
+        unit: &str,
+        instance: u64,
+        source: &str,
+        mut output: Option<File>,
+    ) {
         let mut bytes = [0u8; 8192];
         let mut pending = Vec::with_capacity(8196);
         loop {
@@ -170,6 +181,17 @@ impl Logger {
                     break;
                 }
             };
+            if let Some(file) = output.as_mut()
+                && let Err(error) = file.write_all(&bytes[..count])
+            {
+                let _ = self.write(
+                    unit,
+                    instance,
+                    "manager",
+                    &format!("标准输出文件写入失败：{error}"),
+                );
+                output = None;
+            }
             pending.extend_from_slice(&bytes[..count]);
             let usable = utf8_prefix(&pending);
             if usable > 0 {

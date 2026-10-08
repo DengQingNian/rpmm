@@ -9,6 +9,7 @@
     "tauri": "tauri",
     "check": "vue-tsc --noEmit",
     "test:logs": "node --experimental-strip-types tests/log-search.mjs",
+    "test:config": "node --experimental-strip-types tests/service-config.mjs",
     "icons": "node scripts/build-icons.mjs"
   },
   "dependencies": {

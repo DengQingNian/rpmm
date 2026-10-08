@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   NButton,
+  NCheckbox,
   NCollapse,
   NCollapseItem,
   NEmpty,
@@ -12,6 +13,7 @@ import { computed } from "vue";
 import type { useDesktop } from "../composables/useDesktop";
 import AppIcon from "./AppIcon.vue";
 import HealthConfigForm from "./HealthConfigForm.vue";
+import ServiceOptionsForm from "./ServiceOptionsForm.vue";
 const props = defineProps<{ desktop: ReturnType<typeof useDesktop> }>();
 const options = computed(() =>
   props.desktop.state.documents.map((item) => ({
@@ -43,6 +45,12 @@ const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAf
         class="empty"
       />
       <div class="config-guide">
+        <strong>导入与导出</strong>
+        <NSelect v-model:value="desktop.state.exportUnits" multiple :options="desktop.state.statuses.map(item => ({ label: item.name, value: item.name }))" :disabled="desktop.locked.value" placeholder="多选要导出的服务" />
+        <NButton :disabled="desktop.locked.value || !desktop.state.exportUnits.length" @click="desktop.exportConfigs">导出所选配置</NButton>
+        <NCheckbox v-model:checked="desktop.state.importOverwrite" :disabled="desktop.locked.value">导入时替换同名服务</NCheckbox>
+        <NButton :disabled="desktop.locked.value" @click="desktop.importConfigs">导入配置包</NButton>
+        <p>JSON 配置包包含主配置、覆盖文件和启用状态。导出已保存内容；关联服务请一并选择。导入前校验整包，保存后不会立即启动或重启。</p>
         <strong class="pencil-note">配置说明</strong>
         <p>
           保存时校验所有配置及依赖。运行实例保留启动时的配置，重启后使用新定义。
@@ -134,6 +142,11 @@ const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAf
         </div>
       </div>
       <NCollapse class="syntax-help"
+        ><NCollapseItem title="启动关联、标准输出与资源上限" name="options">
+          <ServiceOptionsForm :draft="desktop.state.serviceDraft" :services="desktop.state.statuses.map(item => item.name)" :current="desktop.state.selected" :disabled="desktop.locked.value || desktop.state.editorLoading || !desktop.state.document" />
+          <p class="form-note">表单读取当前文档。覆盖文件不能删除主配置或其他覆盖文件中继承的 Requires/After/Before/Wants；移除关联时请编辑定义该关联的文件。</p>
+          <NButton :disabled="desktop.locked.value || desktop.state.editorLoading || !desktop.state.document" @click="desktop.applyOptions">写入当前草稿</NButton>
+        </NCollapseItem
         ><NCollapseItem title="健康监控配置" name="health"
           ><HealthConfigForm :desktop="desktop" /></NCollapseItem
         ><NCollapseItem title="支持的配置指令与示例" name="syntax">

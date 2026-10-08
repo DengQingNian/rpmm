@@ -33,7 +33,6 @@ const sourceOptions = [
   { label: "标准输出", value: "stdout" },
   { label: "错误输出", value: "stderr" },
   { label: "生命周期", value: "manager" },
-  { label: "健康检查", value: "health" },
 ];
 const linesOptions = [200, 500, 1000, 10000].map((value) => ({
   label: `最近 ${value} 行`,

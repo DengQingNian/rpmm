@@ -22,10 +22,85 @@ impl Default for Preferences {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Document {
     pub name: String,
     pub text: String,
+}
+
+/// 可移植的配置包；按服务保留原文、覆盖顺序与启用状态。
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigBundle {
+    pub format: String,
+    pub version: u32,
+    pub services: Vec<ServiceBundle>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceBundle {
+    pub name: String,
+    pub enabled: bool,
+    pub documents: Vec<Document>,
+}
+
+/// 导出指定服务及覆盖文件。参数：root 为目录，statuses 为选中状态。返回：结构化配置包。
+pub fn export_bundle(root: &Path, statuses: &[crate::manager::Status]) -> Result<ConfigBundle> {
+    if statuses.is_empty() {
+        return Err(Error::Config("请至少选择一个服务".into()));
+    }
+    Ok(ConfigBundle {
+        format: "rpmm-config".into(),
+        version: 1,
+        services: statuses
+            .iter()
+            .map(|status| {
+                Ok(ServiceBundle {
+                    name: status.name.clone(),
+                    enabled: status.enabled,
+                    documents: documents(root, &status.name)?,
+                })
+            })
+            .collect::<Result<_>>()?,
+    })
+}
+
+/// 读取持久化的桌面数据目录选择。参数：无。返回：已配置目录或默认目录。
+pub fn configured_root() -> Result<PathBuf> {
+    load_root_selection(&default_root())
+}
+
+/// 从指定默认目录读取桌面数据目录选择。参数：default 为选择文件所在的默认目录。返回：已保存路径或默认目录。
+pub fn load_root_selection(default: &Path) -> Result<PathBuf> {
+    match std::fs::read(default.join("state/data-root.json")) {
+        Ok(bytes) => {
+            let root: PathBuf = serde_json::from_slice(&bytes)?;
+            if !root.is_absolute() {
+                return Err(Error::Config("数据目录必须为绝对路径".into()));
+            }
+            Ok(root)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(default.to_path_buf()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 保存下次桌面启动使用的数据目录。参数：root 为已验证绝对路径。返回：持久化结果。
+pub fn save_root(root: &Path) -> Result<()> {
+    save_root_selection(&default_root(), root)
+}
+
+/// 原子保存数据目录选择到指定默认目录。参数：default 为选择文件所在目录，root 为绝对目标路径。返回：保存结果。
+pub fn save_root_selection(default: &Path, root: &Path) -> Result<()> {
+    if !root.is_absolute() {
+        return Err(Error::Config("数据目录必须为绝对路径".into()));
+    }
+    std::fs::create_dir_all(default.join("state"))?;
+    atomic_write(
+        &default.join("state/data-root.json"),
+        &serde_json::to_vec(root)?,
+    )
 }
 
 /// 获取当前用户的数据目录。参数：无。返回：桌面端和 CLI 共用的默认路径。

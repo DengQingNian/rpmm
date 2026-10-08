@@ -209,3 +209,67 @@ fn real_metrics_use_two_samples() {
     let (_, process) = collector.sample(Some(std::process::id()));
     assert!(process.unwrap().cpu.is_none());
 }
+
+/// 验证输出目录及资源额度解析、清空与非法输入。参数：无。返回：无。
+#[test]
+fn output_and_resource_configuration() {
+    let mut unit = Unit::new("app.service");
+    config::merge(&mut unit, "app.service", "[Service]\nExecStart=C:/app.exe\nStandardOutputDirectory=D:/output files\nMemoryMax=2G\nCPUQuota=25%\n").unwrap();
+    assert_eq!(unit.stdout_directory.as_deref(), Some("D:/output files"));
+    assert_eq!(unit.memory_max, Some(2 * 1024usize.pow(3)));
+    assert_eq!(unit.cpu_quota, Some(25));
+    for text in [
+        "MemoryMax=0",
+        "MemoryMax=-1M",
+        "MemoryMax=999999999999999999999G",
+        "CPUQuota=0%",
+        "CPUQuota=101%",
+        "StandardOutputDirectory=relative",
+    ] {
+        assert!(
+            config::merge(
+                &mut unit.clone(),
+                "bad.conf",
+                &format!("[Service]\n{text}\n")
+            )
+            .is_err(),
+            "{text}"
+        );
+    }
+    config::merge(
+        &mut unit,
+        "reset.conf",
+        "[Service]\nStandardOutputDirectory=\nMemoryMax=infinity\nCPUQuota=\n",
+    )
+    .unwrap();
+    assert!(
+        unit.memory_max.is_none() && unit.cpu_quota.is_none() && unit.stdout_directory.is_none()
+    );
+}
+
+/// 验证健康关联自动拉入启动闭包并排序，排序环会被拒绝。参数：无。返回：无。
+#[test]
+fn health_dependencies_are_ordered_and_required() {
+    let mut app = Unit::new("app.service");
+    config::merge(&mut app, "app.service", "[Unit]\nHealthAfter=db.service\n").unwrap();
+    let mut db = Unit::new("db.service");
+    let mut units = std::collections::BTreeMap::from([
+        (app.name.clone(), app.clone()),
+        (db.name.clone(), db.clone()),
+    ]);
+    let plan = rpmm::graph::start_plan(&units, &["app.service".into()]).unwrap();
+    assert_eq!(
+        plan.layers,
+        vec![
+            vec!["db.service".to_string()],
+            vec!["app.service".to_string()]
+        ]
+    );
+    let stopped = rpmm::graph::stop_set(&units, &["db.service".into()]);
+    assert!(stopped.contains("app.service"));
+    db.after.push("app.service".into());
+    units.insert(db.name.clone(), db);
+    assert!(rpmm::graph::start_plan(&units, &["app.service".into()]).is_err());
+    config::merge(&mut app, "reset.conf", "[Unit]\nHealthAfter=\n").unwrap();
+    assert!(app.health_after.is_empty());
+}
