@@ -1,0 +1,22 @@
+[package]
+name = "rpmm-desktop"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.90"
+description = "带托盘、监控和配置界面的 Windows 进程管理器"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rpmm = { path = ".." }
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["sync", "time"] }
+tauri-plugin-dialog = "2"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

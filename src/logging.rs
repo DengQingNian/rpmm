@@ -3,7 +3,7 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -106,32 +106,51 @@ impl Logger {
     }
     /// 查询已持锁的历史。参数：unit/source/limit 为筛选和条数。返回：记录。
     fn tail_locked(&self, unit: &str, source: Option<&str>, limit: usize) -> Result<Vec<Record>> {
-        let mut records = std::collections::VecDeque::new();
-        for index in (0..=self.backups).rev() {
+        let limit = limit.min(10000);
+        let mut records = Vec::new();
+        if limit == 0 {
+            return Ok(records);
+        }
+        // 从最新文件末尾向前按块读取，达到目标条数即结束，避免每次刷新扫描全部轮转文件。
+        for index in 0..=self.backups {
             let path = self.directory.join(if index == 0 {
                 format!("{unit}.jsonl")
             } else {
                 format!("{unit}.jsonl.{index}")
             });
-            let file = match File::open(path) {
+            let mut file = match File::open(path) {
                 Ok(file) => file,
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(e.into()),
             };
-            for line in BufReader::new(file).lines() {
-                let line = line?;
-                // 跳过因宿主崩溃留下的最后一条不完整记录。
-                if let Ok(record) = serde_json::from_str::<Record>(&line)
-                    && source.is_none_or(|s| s == record.source)
-                {
-                    records.push_back(record);
-                    if records.len() > limit.min(10000) {
-                        records.pop_front();
+            let mut offset = file.seek(SeekFrom::End(0))?;
+            let mut pending = Vec::new();
+            while offset > 0 && records.len() < limit {
+                let count = offset.min(65536) as usize;
+                offset -= count as u64;
+                file.seek(SeekFrom::Start(offset))?;
+                let mut chunk = vec![0; count];
+                file.read_exact(&mut chunk)?;
+                chunk.extend_from_slice(&pending);
+                pending = chunk;
+                while let Some(newline) = pending.iter().rposition(|byte| *byte == b'\n') {
+                    let line = pending.split_off(newline + 1);
+                    pending.truncate(newline);
+                    append_record(&line, source, &mut records);
+                    if records.len() == limit {
+                        break;
                     }
                 }
             }
+            if offset == 0 && records.len() < limit {
+                append_record(&pending, source, &mut records);
+            }
+            if records.len() == limit {
+                break;
+            }
         }
-        Ok(records.into_iter().collect())
+        records.reverse();
+        Ok(records)
     }
     /// 持续读取一个进程管道。参数：reader 和记录上下文。返回：无；异常写入生命周期日志。
     pub fn drain(&self, mut reader: impl Read, unit: &str, instance: u64, source: &str) {
@@ -185,4 +204,13 @@ fn utf8_prefix(bytes: &[u8]) -> usize {
         }
     }
     bytes.len()
+}
+
+/// 解码一条倒序读取的日志。参数：line 为 JSON 字节，source 为可选来源，records 为结果容器。返回：无；跳过空行与崩溃留下的残缺记录。
+fn append_record(line: &[u8], source: Option<&str>, records: &mut Vec<Record>) {
+    if let Ok(record) = serde_json::from_slice::<Record>(line)
+        && source.is_none_or(|s| s == record.source)
+    {
+        records.push(record);
+    }
 }

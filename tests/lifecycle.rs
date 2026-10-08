@@ -479,3 +479,57 @@ fn streamed_utf8_survives_invalid_prefix() {
         .collect::<String>();
     assert_eq!(text, "�中");
 }
+
+/// 验证后台健康检查独立于界面运行、记录历史，并在停止及重启时隔离实例。参数：无。返回：无。
+#[tokio::test]
+async fn health_monitor_tracks_instances_and_persists() {
+    let root = root();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    write(
+        &root,
+        "a.service",
+        &format!(
+            "[Service]\nExecStart=C:/fake.exe\nHealthType=tcp\nHealthPort={port}\nHealthIntervalSec=1s\n"
+        ),
+    );
+    let manager = Manager::with_backend(&root, Arc::new(Fake::default())).unwrap();
+    manager.start(&["a.service".into()]).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while manager.health_status().unwrap()[0]["latest"].is_null() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        manager.health_status().unwrap()[0]["latest"]["healthy"],
+        true
+    );
+    let first = manager.status(Some("a.service")).unwrap()[0].instance;
+    manager.stop(&["a.service".into()]).await.unwrap();
+    assert!(manager.health_status().unwrap()[0]["latest"].is_null());
+    let records = manager
+        .logger
+        .tail("a.service", Some("health"), 100)
+        .unwrap();
+    assert!(!records.is_empty());
+    assert_eq!(records[0].instance, first);
+    let original = std::fs::read_to_string(root.join("units/a.service")).unwrap();
+    let changed = original.replace("HealthType=tcp", "HealthType=none");
+    manager
+        .save_document("a.service", &changed, Some(&original))
+        .await
+        .unwrap();
+    assert_eq!(
+        manager.unit_snapshot("a.service").unwrap().health.kind,
+        "none"
+    );
+    manager.start(&["a.service".into()]).await.unwrap();
+    assert!(manager.health_status().unwrap()[0]["latest"].is_null());
+    assert_ne!(
+        manager.status(Some("a.service")).unwrap()[0].instance,
+        first
+    );
+    manager.shutdown().await.unwrap();
+}

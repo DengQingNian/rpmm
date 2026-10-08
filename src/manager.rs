@@ -64,6 +64,7 @@ pub struct Manager {
     shutting_down: AtomicBool,
     generation: AtomicU64,
     serial: AtomicU64,
+    health_records: Mutex<BTreeMap<String, crate::health::HealthRecord>>,
 }
 
 impl Manager {
@@ -100,6 +101,7 @@ impl Manager {
             shutting_down: AtomicBool::new(false),
             generation: AtomicU64::new(1),
             serial: AtomicU64::new(1),
+            health_records: Mutex::new(BTreeMap::new()),
         }))
     }
     /// 获取一致状态快照。参数：name 为可选 unit 名。返回：状态列表。
@@ -134,6 +136,73 @@ impl Manager {
                 status
             })
             .collect())
+    }
+    /// 获取实例配置快照。参数：name 为进程名称。返回：运行定义或当前定义。
+    pub fn unit_snapshot(&self, name: &str) -> Result<Unit> {
+        if let Some(job) = self.jobs.lock().unwrap().get(name)
+            && !*job.done.borrow()
+        {
+            return Ok(job.unit.clone());
+        }
+        self.units
+            .read()
+            .unwrap()
+            .get(name)
+            .cloned()
+            .ok_or_else(|| Error::Operation("进程不存在".into()))
+    }
+    /// 查询所有健康检查状态。参数：无。返回：名称、配置和当前实例最近的检查结果。
+    pub fn health_status(&self) -> Result<Vec<serde_json::Value>> {
+        self.status(None)?.into_iter().map(|status| {
+            let unit = self.unit_snapshot(&status.name)?;
+            let record = self.health_records.lock().unwrap().get(&status.name).filter(|r| r.instance == status.instance && status.state == State::Active).cloned();
+            Ok(serde_json::json!({ "unit": status.name, "config": unit.health, "latest": record }))
+        }).collect()
+    }
+    /// 按运行快照后台探测并记录结果。参数：self 为管理器，unit/task 为配置和监督所有权。返回：任务结束时返回。
+    async fn monitor_health(self: Arc<Self>, unit: Unit, task: u64) {
+        let Ok(client) = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .build()
+        else {
+            return;
+        };
+        // 监督所有权与实例编号都核对，避免停止或重启时发布迟到结果。
+        loop {
+            let Some(current) = self.jobs.lock().unwrap().get(&unit.name).cloned() else {
+                break;
+            };
+            if current.task != task || *current.done.borrow() || *current.cancel.borrow() {
+                break;
+            }
+            let mut cancelled = current.cancel.subscribe();
+            let mut pause = Duration::from_millis(250);
+            if let Ok(statuses) = self.status(Some(&unit.name))
+                && let Some(status) = statuses.first()
+                && status.state == State::Active
+                && status.pid.is_some()
+            {
+                pause = unit.health.interval;
+                let record = crate::health::probe(&unit.health, status.instance, &client).await;
+                if self.status(Some(&unit.name)).is_ok_and(|v| {
+                    v[0].state == State::Active
+                        && v[0].instance == record.instance
+                        && v[0].pid == status.pid
+                }) {
+                    self.health_records
+                        .lock()
+                        .unwrap()
+                        .insert(unit.name.clone(), record.clone());
+                    if let Ok(text) = serde_json::to_string(&record) {
+                        let _ = self
+                            .logger
+                            .write(&unit.name, record.instance, "health", &text);
+                    }
+                }
+            }
+            tokio::select! { _ = tokio::time::sleep(pause) => (), _ = cancelled.changed() => () }
+        }
     }
     /// 原子更新实例状态。参数：name/task 为所有权标识，edit 为短时修改函数。返回：无。
     fn update(&self, name: &str, task: u64, edit: impl FnOnce(&mut Status)) {
@@ -301,6 +370,9 @@ impl Manager {
             },
         );
         // 关闭发布窗口：停止可能发生在创建取消通道和发布状态之间。
+        if matches!(unit.health.kind.as_str(), "tcp" | "http") {
+            tokio::spawn(self.clone().monitor_health(unit.clone(), task));
+        }
         if (self.abort.load(Ordering::SeqCst) || self.shutting_down.load(Ordering::SeqCst))
             && let Some(job) = self.jobs.lock().unwrap().get(&unit.name)
         {
@@ -660,7 +732,13 @@ impl Manager {
     pub async fn reload(&self) -> Result<u64> {
         let _guard = self.transaction.lock().await;
         let candidate = config::load(&self.root.join("units"))?;
-        graph::order(&candidate, &candidate.keys().cloned().collect())?;
+        self.validate_candidate(&candidate)?;
+        Ok(self.apply_candidate(candidate))
+    }
+    /// 检查候选图与运行实例是否兼容。参数：candidate 为候选定义。返回：校验结果。
+    fn validate_candidate(&self, candidate: &Units) -> Result<()> {
+        // 同时校验新定义和运行快照，防止保存后产生跨版本依赖环或丢失活跃实例。
+        graph::order(candidate, &candidate.keys().cloned().collect())?;
         for (name, job) in self.jobs.lock().unwrap().iter() {
             if !*job.done.borrow() && !candidate.contains_key(name) {
                 return Err(Error::Config(format!("不能删除运行中的 unit：{name}")));
@@ -673,10 +751,45 @@ impl Manager {
             }
         }
         graph::order(&effective, &effective.keys().cloned().collect())?;
+        Ok(())
+    }
+    /// 提交已经校验的定义并递增版本。参数：candidate 为新定义。返回：版本号。
+    fn apply_candidate(&self, candidate: Units) -> u64 {
         *self.units.write().unwrap() = candidate;
         let version = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.event("manager", 0, &format!("配置重载版本 {version}"));
-        Ok(version)
+        version
+    }
+    /// 保存并重载一份配置，拒绝覆盖外部修改。参数：name 为相对文件名，text 为正文，expected 为编辑时原文（新建为 None）。返回：新配置版本。
+    pub async fn save_document(
+        &self,
+        name: &str,
+        text: &str,
+        expected: Option<&str>,
+    ) -> Result<u64> {
+        let _guard = self.transaction.lock().await;
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err(Error::Operation("管理器正在关闭".into()));
+        }
+        crate::desktop::validate_document_name(name)?;
+        crate::desktop::validate_text(text)?;
+        let directory = self.root.join("units");
+        let path = crate::desktop::document_path(&directory, name)?;
+        let current = crate::desktop::read_optional(&path)?;
+        if current.as_deref() != expected {
+            return Err(Error::Operation(
+                "配置已被其他操作修改，请重新打开后再保存".into(),
+            ));
+        }
+        // 所有解析与依赖检查在写盘前完成，失败时原文件和运行定义都保持原样。
+        let candidate = config::load_override(&directory, Some((name, text)))?;
+        if !candidate.contains_key(name.split(".d/").next().unwrap_or(name)) {
+            return Err(Error::Config("请先创建对应的 .service 主配置".into()));
+        }
+        self.validate_candidate(&candidate)?;
+        std::fs::create_dir_all(path.parent().unwrap())?;
+        atomic_write(&path, text.as_bytes())?;
+        Ok(self.apply_candidate(candidate))
     }
     /// 持久化开机成员关系，不立即启停。参数：name 和 enable 为名称及动作。返回：结果。
     pub async fn enable(&self, name: &str, enable: bool) -> Result<()> {
@@ -792,11 +905,33 @@ async fn wait(
         tokio::select! { _ = tokio::time::sleep(Duration::from_millis(25)) => (), _ = cancelled(cancel) => return Err(Error::Operation("操作取消".into())), _ = deadline_wait(deadline) => return Err(Error::Operation("进程等待超时".into())) }
     }
 }
-/// 持久化小状态文件并原子替换。参数：path、bytes 为路径和正文。返回：结果。
+struct PendingFile(PathBuf);
+
+impl Drop for PendingFile {
+    /// 清理未提交的写入文件。参数：无。返回：无。
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// 持久化小状态及配置文件并原子替换。参数：path、bytes 为路径和正文。返回：结果。
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let temporary = path.with_extension("pending");
-    let mut file = std::fs::File::create(&temporary)?;
+    static WRITES: AtomicU64 = AtomicU64::new(0);
+    let temporary = path.with_file_name(format!(
+        ".rpmm-{}-{}-{}.pending",
+        path.file_name()
+            .ok_or_else(|| Error::Operation("写入路径必须指向文件".into()))?
+            .to_string_lossy(),
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::SeqCst)
+    ));
+    // 独占创建防止跟随遗留链接；隐藏的候选文件不会被配置加载器识别成 unit。
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    let _cleanup = PendingFile(temporary.clone());
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);

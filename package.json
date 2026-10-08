@@ -1,0 +1,28 @@
+{
+  "name": "rpmm-desktop",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "vue-tsc --noEmit && vite build",
+    "tauri": "tauri",
+    "check": "vue-tsc --noEmit",
+    "test:logs": "node --experimental-strip-types tests/log-search.mjs",
+    "icons": "node scripts/build-icons.mjs"
+  },
+  "dependencies": {
+    "@lucide/vue": "^1.53.0",
+    "@tauri-apps/api": "^2",
+    "echarts": "^6.1.0",
+    "naive-ui": "^2.45.3",
+    "vue": "^3.5.43"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-vue": "^6.0.9",
+    "typescript": "^5.9",
+    "vite": "^7",
+    "vue-tsc": "^3.3.12"
+  }
+}

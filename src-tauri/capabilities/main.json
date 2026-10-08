@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "本地监控窗口的基础权限，进程及配置操作由 Rust 命令处理",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

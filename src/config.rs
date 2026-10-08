@@ -44,6 +44,8 @@ pub struct Unit {
     pub exec_stop: Vec<Vec<String>>,
     pub working_directory: Option<String>,
     pub environment: BTreeMap<String, String>,
+    #[serde(default)]
+    pub health: crate::health::HealthConfig,
     pub restart: Restart,
     pub restart_sec: Duration,
     pub timeout_start: Option<Duration>,
@@ -73,6 +75,7 @@ impl Unit {
             exec_stop: vec![],
             working_directory: None,
             environment: BTreeMap::new(),
+            health: crate::health::HealthConfig::default(),
             restart: Restart::No,
             restart_sec: Duration::from_millis(100),
             timeout_start: Some(Duration::from_secs(90)),
@@ -493,6 +496,31 @@ fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
     }
     let defaults = Unit::new(&unit.name);
     match (section, key) {
+        ("Service", "HealthType") => unit.health.kind = value.into(),
+        ("Service", "HealthPort") => {
+            unit.health.port = if value.is_empty() {
+                0
+            } else {
+                value.parse().map_err(crate::operation)?
+            }
+        }
+        ("Service", "HealthUrl") => unit.health.url = value.into(),
+        ("Service", "HealthTimeoutSec" | "HealthIntervalSec") => {
+            let duration = if value.is_empty() {
+                if key == "HealthTimeoutSec" {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_secs(10)
+                }
+            } else {
+                timespan(value)?.ok_or_else(|| Error::Config("健康检查时间必须有限".into()))?
+            };
+            if key == "HealthTimeoutSec" {
+                unit.health.timeout = duration;
+            } else {
+                unit.health.interval = duration;
+            }
+        }
         ("Unit", "Description") => unit.description = specifiers(value, &unit.name)?,
         ("Unit", "Requires" | "Wants" | "After" | "Before") => {
             let values = words(value)?;
@@ -647,6 +675,7 @@ fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
 /// 校验最终合并定义。参数：unit 为定义。返回：结果。
 pub fn validate(unit: &Unit) -> Result<()> {
     validate_name(&unit.name)?;
+    unit.health.validate()?;
     if unit.exec_start.is_empty() && !(unit.remain_after_exit && !unit.exec_stop.is_empty()) {
         return Err(invalid(unit, "ExecStart", "缺少 ExecStart"));
     }
@@ -695,7 +724,17 @@ fn invalid(unit: &Unit, key: &str, message: &str) -> Error {
 
 /// 加载目录中所有 unit 及同名 drop-in。参数：directory 为 units 目录。返回：有序定义表。
 pub fn load(directory: &Path) -> Result<BTreeMap<String, Unit>> {
+    load_override(directory, None)
+}
+
+/// 加载候选配置，可在写盘前替换一份正文。参数：directory 为目录，replacement 为已校验的相对文件名及正文。返回：完整且已验证的定义表。
+pub fn load_override(
+    directory: &Path,
+    replacement: Option<(&str, &str)>,
+) -> Result<BTreeMap<String, Unit>> {
     let mut units = BTreeMap::new();
+    let mut names = Vec::new();
+    // 先收集磁盘名称，再补入新建文件；候选正文不会改变其他文件的校验规则。
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -712,6 +751,16 @@ pub fn load(directory: &Path) -> Result<BTreeMap<String, Unit>> {
             return Err(Error::Config(format!("不支持 unit 链接/目录：{name}")));
         }
         validate_name(&name)?;
+        names.push(name);
+    }
+    if let Some((name, _)) = replacement {
+        crate::desktop::validate_document_name(name)?;
+        if !name.contains('/') && !names.contains(&name.to_string()) {
+            names.push(name.into());
+        }
+    }
+    names.sort();
+    for name in names {
         if units
             .keys()
             .any(|key: &String| key.eq_ignore_ascii_case(&name))
@@ -719,11 +768,12 @@ pub fn load(directory: &Path) -> Result<BTreeMap<String, Unit>> {
             return Err(Error::Config(format!("名称大小写冲突：{name}")));
         }
         let mut unit = Unit::new(&name);
-        merge(
-            &mut unit,
-            &entry.path().display().to_string(),
-            &read_text(&entry.path())?,
-        )?;
+        let path = directory.join(&name);
+        let text = match replacement {
+            Some((file, text)) if file == name => text.to_string(),
+            _ => read_text(&path)?,
+        };
+        merge(&mut unit, &path.display().to_string(), &text)?;
         let drop_in = directory.join(format!("{name}.d"));
         if drop_in.exists() {
             if std::fs::symlink_metadata(&drop_in)?
@@ -735,15 +785,36 @@ pub fn load(directory: &Path) -> Result<BTreeMap<String, Unit>> {
             let mut files = std::fs::read_dir(drop_in)?
                 .map(|e| e.map(|e| e.path()))
                 .collect::<std::io::Result<Vec<_>>>()?;
+            if let Some((file, _)) = replacement {
+                let path = directory.join(file);
+                if path.parent() == Some(directory.join(format!("{name}.d")).as_path())
+                    && !files.contains(&path)
+                {
+                    files.push(path);
+                }
+            }
             files.sort();
             for path in files {
                 if path.extension().is_some_and(|e| e == "conf") {
-                    if std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
+                    if path.exists() && std::fs::symlink_metadata(&path)?.file_type().is_symlink() {
                         return Err(Error::Config("不支持 drop-in 链接".into()));
                     }
-                    merge(&mut unit, &path.display().to_string(), &read_text(&path)?)?;
+                    let relative = path
+                        .strip_prefix(directory)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    let text = match replacement {
+                        Some((file, text)) if file == relative => text.to_string(),
+                        _ => read_text(&path)?,
+                    };
+                    merge(&mut unit, &path.display().to_string(), &text)?;
                 }
             }
+        } else if let Some((file, text)) = replacement
+            && file.starts_with(&format!("{name}.d/"))
+        {
+            merge(&mut unit, &directory.join(file).display().to_string(), text)?;
         }
         if unit.service_type == ServiceType::Oneshot && !unit.timeout_start_set {
             unit.timeout_start = None;

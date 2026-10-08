@@ -20,18 +20,22 @@
 | Environment、WorkingDirectory | Windows 近似 | 继承管理器环境，覆盖 Windows 变量；未指定目录使用 SystemRoot/System32 |
 | Restart | 兼容子集 | no、always、on-failure、on-success；非零退出、启动错误、超时视为失败；不实现 POSIX 信号分类 |
 | RestartSec、TimeoutStartSec、TimeoutStopSec | 兼容子集 | RestartSec 必须有限；启动/停止超时可 infinity；停止超时逐条应用 |
+| HealthType、HealthPort、HealthUrl、HealthTimeoutSec、HealthIntervalSec | rpmm 扩展 | TCP 探测本机端口；HTTP/HTTPS 直接响应 200 成功；默认超时 1 秒、间隔 10 秒，记录历史但不自动重启 |
 | WantedBy=multi-user.target | Windows 近似 | 保存启用状态；管理器启动时拉起成员；不创建 Linux symlink |
 | 进程组清理 | Windows 近似 | 挂起创建后加入 Job；禁止 breakaway；关闭 Job 清理进程树 |
 | 停止信号 | Windows 差异 | 使用 ExecStop 或终止 Job；没有 SIGTERM、SIGKILL、KillSignal 映射 |
 | 配置重载 | 兼容意图/首版限制 | 原子校验；运行实例完整保留旧配置及依赖快照；不自动重启应用 |
-| Linux 用户/组、User、Group | 暂不支持 | 所有 unit 继承安装账户；不静默忽略 |
+| Linux 用户/组、User、Group | 暂不支持 | 所有 unit 继承当前登录用户账户；不静默忽略 |
 | EnvironmentFile、ExecStartPre/Post、ExecStopPost、ExecReload | 暂不支持 | 明确拒绝，防止部分执行被误认为完整兼容 |
 | 命令前缀、其他 specifier、模板和别名 | 暂不支持 | 包括 `-`、`+`、`!`、`@` 前缀及实例模板 |
 | network.target/network-online.target | 暂不支持 | 不把网络排序伪装成网络已就绪 |
 | notify/forking/dbus/idle 等 Type | 暂不支持 | 没有应用级就绪协议和主进程推断 |
 | Socket、Timer、其他自定义 target | 暂不支持 | 后续独立扩展；首版仅普通 .service |
 | CPU/内存配额、Linux 沙箱和网络隔离 | 暂不支持 | Job 首版用于生命周期，未实现资源指令或网络安全边界 |
-| journald/Event Log | Windows 替代 | JSONL 文件及 CLI；首版不接 Event Log |
-| GUI 和交互桌面 | 暂不支持 | 服务 Session 0；不提供用户会话代理 |
+| journald/Event Log | Windows 替代 | JSONL 文件、GUI 和 CLI；不接 Event Log |
+| GUI 和交互桌面 | 已支持 | Tauri 2 监控、配置编辑；子进程处于当前用户会话 |
+| Windows 服务 | 已移除 | 桌面进程直接监督；不注册服务或授予服务登录权限 |
+| 开机启动 | 当前用户登录启动 | 当前用户 Run 登记；隐藏到托盘后激活 enabled 集合 |
+| 最小化、窗口关闭 | 常驻托盘 | 仅明确退出时有序停止子进程；托盘点击恢复窗口 |
 
-Windows 机制参考：[Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[SCM 状态转换](https://learn.microsoft.com/en-us/windows/win32/services/service-status-transitions)、[命名管道访问控制](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)。
+Windows 机制参考：[Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[命名管道访问控制](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)、[Tauri 托盘](https://v2.tauri.app/learn/system-tray/)、[Run 启动登记](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys)。

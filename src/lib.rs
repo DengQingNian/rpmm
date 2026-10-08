@@ -1,12 +1,16 @@
 //! Windows 程序托管器的可测试核心与平台适配。
 pub mod config;
+pub mod desktop;
 pub mod graph;
+pub mod health;
 pub mod ipc;
 pub mod logging;
 pub mod manager;
+pub mod metrics;
 pub mod platform;
 pub mod policy;
-pub mod scm;
+#[cfg(windows)]
+pub mod security;
 
 /// 项目统一错误，便于 CLI 和 IPC 返回稳定的错误类别。
 #[derive(Debug, thiserror::Error)]

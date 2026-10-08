@@ -1,2 +1,5 @@
 /target/
 temp/
+/node_modules/
+/dist/
+/src-tauri/gen/

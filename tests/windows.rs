@@ -230,11 +230,11 @@ async fn ipc_control_and_exclusive_root() {
     )
     .unwrap();
     let manager = Manager::new(&root).unwrap();
-    let (stop_tx, stop_rx) = watch::channel(false);
+    let (_stop_tx, stop_rx) = watch::channel(false);
     let (ready_tx, ready_rx) = oneshot::channel();
     let server = tokio::spawn(rpmm::ipc::serve(manager.clone(), stop_rx, ready_tx));
     ready_rx.await.unwrap().unwrap();
-    assert!(rpmm::scm::security::pipe(&rpmm::ipc::pipe_name(&root), true).is_err());
+    assert!(rpmm::security::pipe(&rpmm::ipc::pipe_name(&root), true).is_err());
     assert!(
         request(
             &root,
@@ -290,8 +290,22 @@ async fn ipc_control_and_exclusive_root() {
     .unwrap();
     let response: rpmm::ipc::Response = rpmm::ipc::read_frame(&mut reader).await.unwrap();
     assert_eq!(response.code, "unsupported-version");
-    let _ = stop_tx.send(true);
-    server.await.unwrap().unwrap();
+    assert!(
+        request(
+            &root,
+            rpmm::ipc::Action::Start {
+                unit: "app.service".into()
+            }
+        )
+        .await
+        .ok
+    );
+    assert!(request(&root, rpmm::ipc::Action::Shutdown).await.ok);
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
     assert_eq!(
         manager.status(None).unwrap()[0].state,
         rpmm::manager::State::Inactive
@@ -306,7 +320,7 @@ async fn pipe_acl_is_explicit() {
         core::PWSTR,
     };
     let root = root("acl");
-    let pipe = rpmm::scm::security::pipe(&rpmm::ipc::pipe_name(&root), true).unwrap();
+    let pipe = rpmm::security::pipe(&rpmm::ipc::pipe_name(&root), true).unwrap();
     unsafe {
         let mut descriptor = PSECURITY_DESCRIPTOR::default();
         GetSecurityInfo(
@@ -337,8 +351,25 @@ async fn pipe_acl_is_explicit() {
         assert!(sddl.contains(";;;BA"));
         assert!(!sddl.contains(";;;WD"));
         assert!(!sddl.contains(";;;AN"));
-        assert!(sddl.contains(&rpmm::scm::security::current_sid().unwrap()));
+        assert!(sddl.contains(&rpmm::security::current_sid().unwrap()));
     }
+}
+
+/// 验证登录启动命令正确保留程序及数据目录中的空格和尾部反斜杠。参数：无。返回：无。
+#[test]
+fn autostart_paths_roundtrip() {
+    let executable = std::path::Path::new("C:\\Program Files\\rpmm\\rpmm-desktop.exe");
+    let root = std::path::Path::new("C:\\Users\\Test User\\Desktop\\rpmm data\\");
+    let command = rpmm::desktop::autostart_command(executable, root);
+    assert_eq!(
+        rpmm::platform::win::decode_command_line(&command).unwrap(),
+        vec![
+            executable.display().to_string(),
+            "--hidden".into(),
+            "--root".into(),
+            root.display().to_string()
+        ]
+    );
 }
 /// 验证宿主被杀后 Job 句柄关闭，从而清理整个托管进程树。参数：无。返回：无。
 #[tokio::test(flavor = "multi_thread")]

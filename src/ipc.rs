@@ -35,6 +35,7 @@ pub enum Action {
         unit: String,
     },
     DaemonReload,
+    Shutdown,
     ResetFailed {
         unit: String,
     },
@@ -157,7 +158,9 @@ async fn execute(manager: &Arc<Manager>, action: Action) -> Result<Value> {
             manager.reset_failed(&unit).await?;
             Ok(Value::Null)
         }
-        Action::Logs { .. } => Err(Error::Operation("日志请求应使用流处理".into())),
+        Action::Logs { .. } | Action::Shutdown => {
+            Err(Error::Operation("此请求应由连接处理器协调".into()))
+        }
     }
 }
 
@@ -166,6 +169,7 @@ async fn connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     stream: S,
     manager: Arc<Manager>,
     mut stop: watch::Receiver<bool>,
+    shutdown: watch::Sender<bool>,
 ) -> Result<()> {
     let mut stream = BufReader::new(stream);
     let request: Request =
@@ -191,6 +195,12 @@ async fn connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         )
         .await;
     }
+    if matches!(request.action, Action::Shutdown) {
+        // 先确认请求已受理，再通知监听器关闭；监听器负责等待完整进程清理。
+        write_frame(stream.get_mut(), &Response::success(Value::Null)?).await?;
+        let _ = shutdown.send(true);
+        return Ok(());
+    }
     if let Action::Logs {
         unit,
         source,
@@ -203,10 +213,10 @@ async fn connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
             manager.status(Some(&unit))?;
             if source
                 .as_deref()
-                .is_some_and(|s| !matches!(s, "stdout" | "stderr" | "manager"))
+                .is_some_and(|s| !matches!(s, "stdout" | "stderr" | "manager" | "health"))
             {
                 return Err(Error::Operation(
-                    "日志来源只能是 stdout/stderr/manager".into(),
+                    "日志来源只能是 stdout/stderr/manager/health".into(),
                 ));
             }
             manager
@@ -253,7 +263,7 @@ pub async fn serve(
     ready: oneshot::Sender<Result<()>>,
 ) -> Result<()> {
     let name = pipe_name(&manager.root);
-    let mut server = match crate::scm::security::pipe(&name, true) {
+    let mut server = match crate::security::pipe(&name, true) {
         Ok(server) => server,
         Err(e) => {
             let _ = ready.send(Err(Error::Operation(e.to_string())));
@@ -270,21 +280,24 @@ pub async fn serve(
         }
     });
     let mut connections = tokio::task::JoinSet::new();
+    let (shutdown, mut requested_stop) = watch::channel(false);
     let accept_result = loop {
-        if *stop.borrow() {
+        if *stop.borrow() || *requested_stop.borrow() {
             break Ok(());
         }
         tokio::select! {
             result = server.connect() => {
                 if let Err(e) = result { break Err(Error::Io(e)); }
-                let next = match crate::scm::security::pipe(&name, false) { Ok(pipe) => pipe, Err(e) => break Err(e) };
+                let next = match crate::security::pipe(&name, false) { Ok(pipe) => pipe, Err(e) => break Err(e) };
                 let connected = std::mem::replace(&mut server, next);
                 let manager = manager.clone(); let stop = stop.clone();
+                let shutdown = shutdown.clone();
                 // 活跃连接数量有上限，避免授权客户端无限消耗内存。
                 if connections.len() >= 64 { drop(connected); continue; }
-                connections.spawn(async move { if let Err(e) = connection(connected, manager.clone(), stop).await { let _ = manager.logger.write("manager", 0, "manager", &format!("IPC 连接结束：{e}")); } });
+                connections.spawn(async move { if let Err(e) = connection(connected, manager.clone(), stop, shutdown).await { let _ = manager.logger.write("manager", 0, "manager", &format!("IPC 连接结束：{e}")); } });
             }
             _ = stop.changed() => break Ok(()),
+            _ = requested_stop.changed() => break Ok(()),
             _ = connections.join_next(), if !connections.is_empty() => (),
         }
     };
