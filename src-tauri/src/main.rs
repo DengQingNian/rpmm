@@ -10,7 +10,7 @@ use rpmm::{
 };
 use serde::Serialize;
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -345,6 +345,21 @@ async fn export_logs(
     .map_err(|e| e.to_string())?
 }
 
+/// 查询子进程配置的界面分类。参数：state 为共享状态。返回：已归一化的分类表。
+#[tauri::command]
+fn categories(state: State<'_, DesktopState>) -> Result<desktop::Categories, String> {
+    desktop::load_categories(&state.manager.root).map_err(|error| error.to_string())
+}
+
+/// 保存子进程配置的界面分类。参数：state 为共享状态，categories 为分类表。返回：保存结果。
+#[tauri::command]
+fn save_categories(
+    state: State<'_, DesktopState>,
+    categories: desktop::Categories,
+) -> Result<(), String> {
+    desktop::save_categories(&state.manager.root, &categories).map_err(|error| error.to_string())
+}
+
 /// 查询持久化设置与真实自启动状态。参数：state 为共享状态。返回：设置及目录。
 #[tauri::command]
 fn settings(state: State<'_, DesktopState>) -> Result<Settings, String> {
@@ -366,7 +381,8 @@ async fn save_settings(
 ) -> Result<(), String> {
     let _guard = state.settings_lock.lock().await;
     desktop::validate_preferences(&preferences).map_err(|error| error.to_string())?;
-    let root = PathBuf::from(root);
+    // 用户输入接受 C:/、C:\、/c/、/cygdrive/c/ 等 Windows 绝对路径写法。
+    let root = rpmm::paths::normalize_path(Path::new(&root));
     if !root.is_absolute() {
         return Err("数据目录必须为绝对路径".into());
     }
@@ -483,11 +499,11 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
 /// 初始化桌面、后台监督与退出协调。参数：无，读取命令行。返回：无。
 fn main() {
     let args = Args::parse();
-    let root = std::path::absolute(
-        args.root
-            .unwrap_or_else(|| desktop::configured_root().expect("无法读取数据目录设置")),
-    )
-    .expect("无法解析数据目录");
+    let root =
+        std::path::absolute(rpmm::paths::normalize_path(&args.root.unwrap_or_else(
+            || desktop::configured_root().expect("无法读取数据目录设置"),
+        )))
+        .expect("无法解析数据目录");
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
@@ -508,6 +524,8 @@ fn main() {
             export_configs,
             import_configs,
             choose_directory,
+            categories,
+            save_categories,
             settings,
             save_settings,
             hide_window,

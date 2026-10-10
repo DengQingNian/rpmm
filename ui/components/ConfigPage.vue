@@ -4,12 +4,14 @@ import {
   NCheckbox,
   NCollapse,
   NCollapseItem,
+  NDropdown,
   NEmpty,
   NInput,
   NSelect,
   NSpin,
 } from "naive-ui";
-import { computed } from "vue";
+import { computed, ref } from "vue";
+import { DEFAULT_CATEGORY } from "../categories";
 import type { useDesktop } from "../composables/useDesktop";
 import AppIcon from "./AppIcon.vue";
 import HealthConfigForm from "./HealthConfigForm.vue";
@@ -21,29 +23,168 @@ const options = computed(() =>
     value: item.name,
   })),
 );
+// 拖动中的子进程和目标分类只用于界面反馈，落盘由分类状态负责。
+const dragging = ref("");
+const dragTarget = ref("");
+
+/** 记录拖动中的子进程。参数：name 为子进程名称，event 为拖动事件。返回：无。 */
+function startDrag(name: string, event: DragEvent): void {
+  if (props.desktop.locked.value) return;
+  dragging.value = name;
+  dragTarget.value = "";
+  // 同时写入 dataTransfer，跨窗口拖动时仍能识别被拖动的对象。
+  event.dataTransfer?.setData("text/plain", name);
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+}
+
+/** 高亮当前经过的分类。参数：name 为分类名称。返回：无。 */
+function dragOver(name: string): void {
+  if (dragging.value) dragTarget.value = name;
+}
+
+/** 离开分类时清除高亮。参数：event 为拖动事件，name 为分类名称。返回：无。
+ * 只在真正离开分类区域时清除，避免经过子元素时闪烁。 */
+function dragLeave(event: DragEvent, name: string): void {
+  const next = event.relatedTarget as Node | null;
+  const area = event.currentTarget as HTMLElement | null;
+  if (dragTarget.value === name && (!next || !area?.contains(next)))
+    dragTarget.value = "";
+}
+
+/** 把拖动的子进程放到目标分类。参数：name 为分类名称。返回：无。 */
+function dropCategory(name: string): void {
+  const unit = dragging.value;
+  endDrag();
+  if (unit) void props.desktop.assignCategory(unit, name);
+}
+
+/** 结束拖动并清除高亮。参数：无。返回：无。 */
+function endDrag(): void {
+  dragging.value = "";
+  dragTarget.value = "";
+}
+
+/** 处理"移动到分类"下拉选择。参数：unit 为子进程名称，name 为分类名称。返回：无。 */
+function moveTo(unit: string, name: string | number): void {
+  void props.desktop.assignCategory(unit, String(name));
+}
+
+/** 生成某一子进程可移动的目标分类。参数：unit 为子进程名称。返回：不含当前分类的下拉选项。 */
+function moveOptions(unit: string) {
+  const current = props.desktop.unitCategory(unit);
+  return props.desktop.categoryGroups.value
+    .filter((group) => group.name !== current)
+    .map((group) => ({ label: group.name, key: group.name }));
+}
 const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAfter=database.service\n\n[Service]\nType=simple\nExecStart="C:/Apps/app.exe" --port 8080\nWorkingDirectory=C:/Apps\nEnvironment="PORT=8080"\nRestart=on-failure\nRestartSec=2s\nTimeoutStopSec=30s\nHealthType=http\nHealthUrl=http://127.0.0.1:8080/health\nHealthTimeoutSec=1s\nHealthIntervalSec=10s\n\n[Install]\nWantedBy=multi-user.target`;
 </script>
 <template>
   <div class="config-workspace">
     <section class="paper config-list">
       <div class="panel-heading">
-        <h2>配置目录</h2>
-        <AppIcon name="folder" />
+        <h2>
+          配置目录 <small>{{ desktop.state.statuses.length }}</small>
+        </h2>
+        <div class="config-heading-actions">
+          <NButton
+            quaternary
+            size="small"
+            title="新增分类"
+            aria-label="新增分类"
+            :disabled="desktop.locked.value"
+            @click="desktop.state.categoryVisible = true"
+            ><template #icon><AppIcon name="category-add" /></template
+          ></NButton>
+          <AppIcon name="folder" />
+        </div>
       </div>
-      <button
-        v-for="process in desktop.state.statuses"
-        :key="process.name"
-        class="config-unit"
-        :class="{ selected: process.name === desktop.state.selected }"
-        :disabled="desktop.locked.value"
-        @click="desktop.selectProcess(process.name)"
-      >
-        <AppIcon name="file" :size="16" />{{ process.name }}</button
-      ><NEmpty
-        v-if="!desktop.state.statuses.length"
-        description="暂无子进程配置"
-        class="empty"
-      />
+      <div v-if="desktop.state.statuses.length" class="config-groups">
+        <section
+          v-for="group in desktop.categoryGroups.value"
+          :key="group.name"
+          class="config-group"
+          :class="{
+            collapsed: !desktop.categoryExpanded(group.name),
+            'drag-over': dragging && dragTarget === group.name,
+          }"
+          @dragover.prevent="dragOver(group.name)"
+          @dragleave="dragLeave($event, group.name)"
+          @drop.prevent="dropCategory(group.name)"
+        >
+          <div class="config-group-head-row">
+            <button
+              class="config-group-head"
+              :aria-expanded="desktop.categoryExpanded(group.name)"
+              @click="desktop.toggleCategory(group.name)"
+            >
+              <AppIcon
+                :name="
+                  desktop.categoryExpanded(group.name)
+                    ? 'chevron-down'
+                    : 'chevron-right'
+                "
+                :size="16"
+              /><strong>{{ group.name }}</strong
+              ><small>{{ group.units.length }}</small>
+            </button>
+            <button
+              v-if="group.name !== DEFAULT_CATEGORY"
+              class="config-group-remove"
+              :title="`删除分类 ${group.name}`"
+              :aria-label="`删除分类 ${group.name}`"
+              :disabled="desktop.locked.value"
+              @click="desktop.removeCategory(group.name)"
+            >
+              <AppIcon name="remove" :size="14" />
+            </button>
+          </div>
+          <div
+            v-show="desktop.categoryExpanded(group.name)"
+            class="config-group-body"
+          >
+            <div
+              v-for="process in group.units"
+              :key="process"
+              class="config-unit-row"
+            >
+              <button
+                class="config-unit"
+                :class="{
+                  selected: process === desktop.state.selected,
+                  dragging: dragging === process,
+                }"
+                :disabled="desktop.locked.value"
+                :draggable="!desktop.locked.value"
+                :title="`拖动 ${process} 到其他分类`"
+                @click="desktop.selectProcess(process)"
+                @dragstart="startDrag(process, $event)"
+                @dragend="endDrag"
+              >
+                <AppIcon name="file" :size="16" />{{ process }}
+              </button>
+              <NDropdown
+                v-if="desktop.categoryGroups.value.length > 1"
+                trigger="click"
+                :options="moveOptions(process)"
+                @select="moveTo(process, $event)"
+              >
+                <button
+                  class="config-unit-move"
+                  :title="`移动 ${process} 到其他分类`"
+                  :aria-label="`移动 ${process} 到其他分类`"
+                  :disabled="desktop.locked.value"
+                >
+                  <AppIcon name="category-move" :size="14" />
+                </button>
+              </NDropdown>
+            </div>
+            <p v-if="!group.units.length" class="config-group-empty">
+              拖动子进程到此分类
+            </p>
+          </div>
+        </section>
+      </div>
+      <NEmpty v-else description="暂无子进程配置" class="empty" />
       <div class="config-guide">
         <strong>导入与导出</strong>
         <NSelect v-model:value="desktop.state.exportUnits" multiple :options="desktop.state.statuses.map(item => ({ label: item.name, value: item.name }))" :disabled="desktop.locked.value" placeholder="多选要导出的服务" />

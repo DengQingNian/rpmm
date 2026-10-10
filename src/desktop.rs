@@ -1,9 +1,18 @@
 //! 桌面应用的用户设置、配置文档及安全文件操作。
 use crate::{Error, Result, config, manager::atomic_write};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
 
 pub const MAX_DOCUMENT: usize = 1024 * 1024;
+/// 分类名称允许的最大字符数。
+pub const MAX_CATEGORY_CHARS: usize = 32;
+/// 单个数据目录允许的分类数量上限。
+pub const MAX_CATEGORIES: usize = 50;
+/// 默认分类名称；未分类和旧数据的子进程都归入该分类。
+pub const DEFAULT_CATEGORY: &str = "默认";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
@@ -242,6 +251,119 @@ pub fn save_preferences(root: &Path, preferences: &Preferences) -> Result<()> {
     atomic_write(
         &root.join("state/desktop.json"),
         &serde_json::to_vec_pretty(preferences)?,
+    )
+}
+
+/// 子进程配置的界面分类；只影响界面组织，不写入 .service 文件。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Categories {
+    /// 有序分类名称，默认分类固定位于首位。
+    pub names: Vec<String>,
+    /// 子进程名称到分类名称的映射；默认分类不记录映射。
+    pub assignments: BTreeMap<String, String>,
+}
+
+impl Default for Categories {
+    /// 提供首次运行的分类。参数：无。返回：仅包含默认分类的分类表。
+    fn default() -> Self {
+        Self {
+            names: vec![DEFAULT_CATEGORY.to_string()],
+            assignments: BTreeMap::new(),
+        }
+    }
+}
+
+/// 获取分类文件的绝对路径。参数：root 为数据目录。返回：分类文件路径。
+pub fn categories_path(root: &Path) -> PathBuf {
+    root.join("state/categories.json")
+}
+
+/// 校验分类名称。参数：name 为已去除首尾空白的名称。返回：校验结果。
+fn validate_category_name(name: &str) -> Result<()> {
+    if name.is_empty() || name.chars().count() > MAX_CATEGORY_CHARS {
+        return Err(Error::Config(format!(
+            "分类名称须为 1～{MAX_CATEGORY_CHARS} 个字符"
+        )));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(Error::Config("分类名称不能包含控制字符".into()));
+    }
+    Ok(())
+}
+
+/// 严格校验界面提交的分类。参数：value 为候选分类。返回：校验结果。
+/// 名称重复、缺少默认分类、映射到不存在的分类以及非法子进程名称都会被拒绝。
+pub fn validate_categories(value: &Categories) -> Result<()> {
+    if value.names.len() > MAX_CATEGORIES {
+        return Err(Error::Config(format!(
+            "分类数量不能超过 {MAX_CATEGORIES} 个"
+        )));
+    }
+    let mut names = BTreeSet::new();
+    for name in &value.names {
+        validate_category_name(name)?;
+        if !names.insert(name.as_str()) {
+            return Err(Error::Config(format!("分类名称重复：{name}")));
+        }
+    }
+    if !names.contains(DEFAULT_CATEGORY) {
+        return Err(Error::Config(format!("缺少默认分类：{DEFAULT_CATEGORY}")));
+    }
+    for (unit, category) in &value.assignments {
+        config::validate_name(unit)?;
+        if !names.contains(category.as_str()) {
+            return Err(Error::Config(format!("分类不存在：{category}")));
+        }
+    }
+    Ok(())
+}
+
+/// 归一化分类数据。参数：value 为磁盘或界面提供的分类。返回：含默认分类且无重复、无越界映射的分类。
+/// 旧版本没有分类文件，或文件被手工修改时都回退到默认分类，保证旧数据仍显示在默认分类下。
+pub fn normalize_categories(value: Categories) -> Categories {
+    let mut names = vec![DEFAULT_CATEGORY.to_string()];
+    for name in value.names {
+        let name = name.trim();
+        // 非法名称、重复名称和超出上限的条目直接丢弃，避免一个坏文件让界面不可用。
+        if validate_category_name(name).is_err()
+            || names.iter().any(|item| item == name)
+            || names.len() >= MAX_CATEGORIES
+        {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    let assignments = value
+        .assignments
+        .into_iter()
+        // 指向已消失分类的映射回落到默认分类；默认分类本身不需要映射。
+        .filter(|(unit, category)| {
+            category != DEFAULT_CATEGORY
+                && names.iter().any(|item| item == category)
+                && config::validate_name(unit).is_ok()
+        })
+        .collect();
+    Categories { names, assignments }
+}
+
+/// 读取界面分类。参数：root 为数据目录。返回：归一化后的分类；文件缺失时返回仅含默认分类的结果。
+pub fn load_categories(root: &Path) -> Result<Categories> {
+    match std::fs::read(categories_path(root)) {
+        Ok(bytes) => Ok(normalize_categories(serde_json::from_slice(&bytes)?)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Categories::default()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// 校验并原子保存界面分类。参数：root 为数据目录，categories 为分类。返回：保存结果。
+pub fn save_categories(root: &Path, categories: &Categories) -> Result<()> {
+    validate_categories(categories)?;
+    std::fs::create_dir_all(root.join("state"))?;
+    let normalized = normalize_categories(categories.clone());
+    atomic_write(
+        &categories_path(root),
+        &serde_json::to_vec_pretty(&normalized)?,
     )
 }
 

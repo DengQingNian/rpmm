@@ -1,5 +1,9 @@
 import {
   Activity,
+  ChevronDown,
+  ChevronRight,
+  FolderInput,
+  FolderPlus,
   PanelLeftClose,
   PanelLeftOpen,
   Maximize,
@@ -61,6 +65,10 @@ export const icons = {
   search: Search,
   dirty: Circle,
   synced: CircleCheck,
+  "category-add": FolderPlus,
+  "category-move": FolderInput,
+  "chevron-down": ChevronDown,
+  "chevron-right": ChevronRight,
 } as const;
 
 /** 界面允许使用的图标名称，避免拼写错误或动态加载整个图标库。 */

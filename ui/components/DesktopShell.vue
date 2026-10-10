@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { NAlert, NButton, NInput, NModal } from "naive-ui";
 import appIcon from "../assets/icon.svg";
+import { MAX_CATEGORY_CHARS } from "../categories";
 import { useDesktop } from "../composables/useDesktop";
 import MonitorPage from "./MonitorPage.vue";
 import DashboardPage from "./DashboardPage.vue";
@@ -14,6 +15,8 @@ import type { IconName } from "../icons";
 const desktop = useDesktop();
 const filename = ref("20-local.conf");
 const dropinError = ref(false);
+const categoryName = ref("");
+const categoryError = ref(false);
 const pages: {
   key: Page;
   title: string;
@@ -60,6 +63,18 @@ async function submitDropin(): Promise<void> {
     requestAnimationFrame(() => {
       dropinError.value = true;
     });
+}
+/** 新增分类并触发表单错误反馈。参数：无。返回：无。 */
+async function submitCategory(): Promise<void> {
+  categoryError.value = false;
+  if (!(await desktop.addCategory(categoryName.value))) {
+    requestAnimationFrame(() => {
+      categoryError.value = true;
+    });
+    return;
+  }
+  // 成功后清空输入，便于连续创建多个分类。
+  categoryName.value = "";
 }
 </script>
 <template>
@@ -217,6 +232,49 @@ async function submitDropin(): Promise<void> {
           attr-type="submit"
           :disabled="desktop.locked.value"
           >开始编辑</NButton
+        >
+      </div>
+    </form></NModal
+  >
+  <NModal
+    v-model:show="desktop.state.categoryVisible"
+    preset="card"
+    title="新增分类"
+    class="sketch-modal small-modal"
+    :mask-closable="!desktop.locked.value"
+    :closable="!desktop.locked.value"
+    :close-on-esc="!desktop.locked.value"
+    ><p class="modal-intro">
+      分类只用于整理配置目录，不会写入 .service 文件。
+    </p>
+    <form
+      :class="{ shake: categoryError }"
+      @submit.prevent="submitCategory"
+      @animationend="categoryError = false"
+    >
+      <label class="field-label">分类名称</label
+      ><NInput
+        v-model:value="categoryName"
+        :disabled="desktop.locked.value"
+        placeholder="例如 数据库"
+        :input-props="{
+          'aria-label': '分类名称',
+          maxlength: MAX_CATEGORY_CHARS,
+        }"
+      />
+      <p class="form-note">
+        未分配和旧数据的子进程始终显示在「默认」分类下；可以拖动列表中的子进程或使用移动按钮更换分类。
+      </p>
+      <div class="dialog-actions">
+        <NButton
+          :disabled="desktop.locked.value"
+          @click="desktop.state.categoryVisible = false"
+          >取消</NButton
+        ><NButton
+          type="primary"
+          attr-type="submit"
+          :disabled="desktop.locked.value"
+          >创建分类</NButton
         >
       </div>
     </form></NModal

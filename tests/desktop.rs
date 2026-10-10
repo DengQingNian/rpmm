@@ -1,6 +1,7 @@
 //! 桌面配置保存、冲突检测和候选图的回归验证。
 use rpmm::{config, desktop, manager::Manager};
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -207,6 +208,80 @@ fn preferences_roundtrip_and_validation() {
         .is_err()
     );
     assert_eq!(desktop::load_preferences(&root).unwrap(), preferences);
+}
+
+/// 验证分类持久化、旧数据兼容与非法输入拒绝。参数：无。返回：无。
+#[test]
+fn categories_roundtrip_and_repair() {
+    let root = root();
+    // 没有分类文件的旧数据只有默认分类，所有子进程都显示在默认分类下。
+    assert_eq!(
+        desktop::load_categories(&root).unwrap(),
+        desktop::Categories::default()
+    );
+    assert_eq!(
+        desktop::Categories::default().names,
+        vec![desktop::DEFAULT_CATEGORY.to_string()]
+    );
+    let value = desktop::Categories {
+        names: vec![desktop::DEFAULT_CATEGORY.into(), "Web".into()],
+        assignments: BTreeMap::from([
+            ("app.service".to_string(), "Web".to_string()),
+            (
+                "db.service".to_string(),
+                desktop::DEFAULT_CATEGORY.to_string(),
+            ),
+        ]),
+    };
+    desktop::save_categories(&root, &value).unwrap();
+    let loaded = desktop::load_categories(&root).unwrap();
+    assert_eq!(loaded.names, value.names);
+    // 默认分类不需要映射，保存时会被丢弃。
+    assert_eq!(
+        loaded.assignments,
+        BTreeMap::from([("app.service".to_string(), "Web".to_string())])
+    );
+    // 手工改坏的分类文件被归一化：默认分类补到首位，越界映射回落到默认分类。
+    std::fs::write(
+        desktop::categories_path(&root),
+        r#"{"names":["Web","Web"],"assignments":{"app.service":"已删除"}}"#,
+    )
+    .unwrap();
+    let repaired = desktop::load_categories(&root).unwrap();
+    assert_eq!(
+        repaired.names,
+        vec![desktop::DEFAULT_CATEGORY.to_string(), "Web".to_string()]
+    );
+    assert!(repaired.assignments.is_empty());
+    // 缺少默认分类、重名、超长、未知分类和非法的子进程名称都拒绝写盘。
+    for invalid in [
+        desktop::Categories {
+            names: vec!["Web".into()],
+            assignments: BTreeMap::new(),
+        },
+        desktop::Categories {
+            names: vec![desktop::DEFAULT_CATEGORY.into(), "Web".into(), "Web".into()],
+            assignments: BTreeMap::new(),
+        },
+        desktop::Categories {
+            names: vec![
+                desktop::DEFAULT_CATEGORY.into(),
+                "x".repeat(desktop::MAX_CATEGORY_CHARS + 1),
+            ],
+            assignments: BTreeMap::new(),
+        },
+        desktop::Categories {
+            names: vec![desktop::DEFAULT_CATEGORY.into()],
+            assignments: BTreeMap::from([("app.service".into(), "Web".into())]),
+        },
+        desktop::Categories {
+            names: vec![desktop::DEFAULT_CATEGORY.into()],
+            assignments: BTreeMap::from([("../app.service".into(), "默认".into())]),
+        },
+    ] {
+        assert!(desktop::save_categories(&root, &invalid).is_err());
+    }
+    assert_eq!(desktop::load_categories(&root).unwrap(), repaired);
 }
 
 /// 验证原子替换失败后清理候选文件，避免污染后续配置重载。参数：无。返回：无。

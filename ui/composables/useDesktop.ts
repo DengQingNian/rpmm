@@ -3,6 +3,18 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useDialog, useMessage } from "naive-ui";
 import { applyService, readService, serviceDefaults, serviceText } from "../serviceConfig";
+import {
+  DEFAULT_CATEGORY,
+  assignUnit,
+  categoryOf,
+  defaultCategories,
+  groupUnits,
+  normalizeCategories,
+  validateCategoryName,
+  withCategory,
+  withoutCategory,
+  type Categories,
+} from "../categories";
 import type {
   ConfigDocument,
   LogRecord,
@@ -85,6 +97,9 @@ export function useDesktop() {
     updated: "",
     createVisible: false,
     dropinVisible: false,
+    categories: defaultCategories(),
+    expandedCategories: [DEFAULT_CATEGORY],
+    categoryVisible: false,
   });
   let timer = 0;
   let logTimer = 0;
@@ -115,6 +130,13 @@ export function useDesktop() {
   }));
   const selectedHealth = computed(() =>
     state.healthStatuses.find((item) => item.unit === state.selected),
+  );
+  // 空分类也会出现在列表中，作为拖动目标。
+  const categoryGroups = computed(() =>
+    groupUnits(
+      state.categories,
+      state.statuses.map((item) => item.name),
+    ),
   );
 
   /** 提示操作错误。参数：error 为错误值。返回：无。 */
@@ -650,6 +672,114 @@ export function useDesktop() {
     }, "导入操作结束");
   }
 
+  /** 判断分类是否展开。参数：name 为分类名称。返回：是否展开。 */
+  function categoryExpanded(name: string): boolean {
+    return state.expandedCategories.includes(name);
+  }
+
+  /** 展开指定分类。参数：name 为分类名称。返回：无。 */
+  function expandCategory(name: string): void {
+    if (!categoryExpanded(name))
+      state.expandedCategories = [...state.expandedCategories, name];
+  }
+
+  /** 折叠或展开分类。参数：name 为分类名称。返回：无。 */
+  function toggleCategory(name: string): void {
+    // 默认分类与其他分类使用同一套开关，首次进入只展开默认分类。
+    if (categoryExpanded(name))
+      state.expandedCategories = state.expandedCategories.filter(
+        (item) => item !== name,
+      );
+    else expandCategory(name);
+  }
+
+  /** 查询子进程所属分类。参数：unit 为子进程名称。返回：分类名称；未分类时返回默认分类。 */
+  function unitCategory(unit: string): string {
+    return categoryOf(state.categories, unit);
+  }
+
+  /** 读取磁盘分类并替换本地状态。参数：无。返回：无。 */
+  async function loadCategories(): Promise<void> {
+    state.categories = normalizeCategories(await call<Categories>("categories"));
+  }
+
+  /** 把分类写入磁盘。参数：无。返回：是否保存成功；失败时回读磁盘并提示。 */
+  async function persistCategories(): Promise<boolean> {
+    try {
+      await call("save_categories", {
+        categories: {
+          names: [...state.categories.names],
+          assignments: { ...state.categories.assignments },
+        },
+      });
+      return true;
+    } catch (error) {
+      report(error);
+      // 回读失败时保留本地状态，下一次保存会重新写入磁盘。
+      try {
+        await loadCategories();
+      } catch {
+        /* 回读失败不再重复提示，避免连环报错 */
+      }
+      return false;
+    }
+  }
+
+  /** 新增分类并写入磁盘。参数：name 为分类名称。返回：是否创建成功。 */
+  async function addCategory(name: string): Promise<boolean> {
+    if (locked.value) return false;
+    const trimmed = name.trim();
+    const problem = validateCategoryName(trimmed, state.categories.names);
+    if (problem) {
+      report(problem);
+      return false;
+    }
+    state.categories = withCategory(state.categories, trimmed);
+    // 新分类立即展开，方便直接拖入子进程。
+    expandCategory(trimmed);
+    state.categoryVisible = false;
+    if (!(await persistCategories())) return false;
+    message.success(`分类已创建：${trimmed}`);
+    return true;
+  }
+
+  /** 删除分类，成员回落到默认分类。参数：name 为分类名称。返回：无。 */
+  async function removeCategory(name: string): Promise<void> {
+    if (locked.value || name === DEFAULT_CATEGORY) return;
+    const members =
+      categoryGroups.value.find((group) => group.name === name)?.units.length ??
+      0;
+    if (
+      !(await confirm(
+        "删除分类？",
+        members
+          ? `「${name}」中的 ${members} 个子进程会回到「${DEFAULT_CATEGORY}」分类，配置本身不受影响。`
+          : `「${name}」当前为空，删除后可以重新创建同名分类。`,
+        "删除分类",
+      ))
+    )
+      return;
+    state.categories = withoutCategory(state.categories, name);
+    state.expandedCategories = state.expandedCategories.filter(
+      (item) => item !== name,
+    );
+    if (await persistCategories()) message.success(`分类已删除：${name}`);
+  }
+
+  /** 把子进程移动到指定分类。参数：unit 为子进程名称，category 为分类名称。返回：无。 */
+  async function assignCategory(unit: string, category: string): Promise<void> {
+    if (
+      locked.value ||
+      unitCategory(unit) === category ||
+      !state.categories.names.includes(category)
+    )
+      return;
+    state.categories = assignUnit(state.categories, unit, category);
+    // 展开目标分类，让移动结果可见。
+    expandCategory(category);
+    if (await persistCategories()) message.success(`已移动到「${category}」`);
+  }
+
   /** 安装独立日志轮询。参数：无。返回：无；零间隔为暂停。 */
   function scheduleLogs(): void {
     window.clearInterval(logTimer);
@@ -759,6 +889,7 @@ export function useDesktop() {
         return;
       }
       state.settings = await call<Settings>("settings");
+      await loadCategories();
       Object.assign(state.settingsDraft, state.settings.preferences, {
         autostart: state.settings.autostart,
         root: state.settings.next_root,
@@ -793,6 +924,13 @@ export function useDesktop() {
     filtered,
     counts,
     selectedHealth,
+    categoryGroups,
+    categoryExpanded,
+    toggleCategory,
+    unitCategory,
+    addCategory,
+    removeCategory,
+    assignCategory,
     updateLogs,
     downloadLogs,
     applyHealth,
