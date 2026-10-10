@@ -129,29 +129,65 @@ pub fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// 判断 Windows 驱动器或 UNC 绝对路径。参数：value 为路径。返回：是否绝对。
+/// 判断文本是否为受支持的 Windows 绝对路径。参数：value 为路径。返回：是否绝对。
+/// 接受 `C:\xx`、`C:/xx`、`/c/xx`、`/cygdrive/c/xx`、`\\server\share` 等形式，与归一化保持一致。
 pub fn windows_absolute(value: &str) -> bool {
-    let b = value.as_bytes();
-    (b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'/' | b'\\'))
-        || value.starts_with("\\\\")
-        || value.starts_with("//")
+    crate::paths::normalize(value).is_some()
 }
 
-/// 将逻辑行拆为参数并解码 systemd 转义。参数：input 为字符串。返回：参数列表。
+/// 按 systemd 规则拆分参数并解码 C 转义。参数：input 为指令值。返回：参数列表；未知转义报错。
 pub fn words(input: &str) -> Result<Vec<String>> {
-    let mut chars = input.chars().peekable();
+    split(input, false)
+}
+
+/// 拆分可能含 Windows 路径的指令值：以绝对路径开头的片段按字面保留并归一化。
+/// 参数：input 为指令值。返回：参数列表；未知转义报错。
+pub fn path_words(input: &str) -> Result<Vec<String>> {
+    split(input, true)
+}
+
+/// 拆分指令值为参数。参数：input 为指令值，native 为是否识别 Windows 原生路径。返回：参数列表。
+/// native 时，词首或 `=` 之后以绝对路径开头的片段不再解码 C 转义，否则 `C:\tools`、
+/// `C:\new` 会被 `\t`、`\n` 改写成制表符和换行，路径随之损坏。
+fn split(input: &str, native: bool) -> Result<Vec<String>> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut index = 0;
     let mut result = vec![];
     let mut item = Vec::new();
     let mut quote = None;
     let mut started = false;
+    let mut content = false;
+    let mut after_eq = false;
+    let mut literal = None;
     // 引号仅能包围完整词；转义在有无引号时都使用相同规则。
-    while let Some(ch) = chars.next() {
+    while index < chars.len() {
+        let ch = chars[index];
+        index += 1;
+        // 词首或 = 之后出现 Windows 绝对路径时，整段按字面路径处理。
+        if native
+            && literal.is_none()
+            && (!content || after_eq)
+            && crate::paths::starts_path(&chars, index - 1, !content)
+        {
+            literal = Some(item.len());
+        }
         match ch {
+            '\\' if literal.is_some() => {
+                // 字面路径里的反斜杠是分隔符，不参与转义解码。
+                started = true;
+                content = true;
+                after_eq = false;
+                item.push(b'\\');
+            }
             '\\' => {
                 started = true;
+                content = true;
+                after_eq = false;
                 let escaped = chars
-                    .next()
+                    .get(index)
+                    .copied()
                     .ok_or_else(|| Error::Config("不完整的转义".into()))?;
+                index += 1;
                 let decoded = match escaped {
                     'a' => '\u{7}',
                     'b' => '\u{8}',
@@ -165,7 +201,8 @@ pub fn words(input: &str) -> Result<Vec<String>> {
                     '\'' => '\'',
                     '"' => '"',
                     'x' => {
-                        let hex: String = chars.by_ref().take(2).collect();
+                        let hex: String = chars.iter().skip(index).take(2).collect();
+                        index += hex.chars().count();
                         if hex.len() != 2 {
                             return Err(Error::Config("不完整的字节转义".into()));
                         }
@@ -178,7 +215,8 @@ pub fn words(input: &str) -> Result<Vec<String>> {
                     }
                     'u' | 'U' => {
                         let count = if escaped == 'u' { 4 } else { 8 };
-                        let hex: String = chars.by_ref().take(count).collect();
+                        let hex: String = chars.iter().skip(index).take(count).collect();
+                        index += hex.chars().count();
                         if hex.len() != count {
                             return Err(Error::Config("不完整的数字转义".into()));
                         }
@@ -187,8 +225,10 @@ pub fn words(input: &str) -> Result<Vec<String>> {
                             .ok_or_else(|| Error::Config("非法 Unicode 转义".into()))?
                     }
                     '0'..='7' => {
+                        let extra: String = chars.iter().skip(index).take(2).collect();
+                        index += extra.chars().count();
                         let mut octal = escaped.to_string();
-                        octal.extend(chars.by_ref().take(2));
+                        octal.push_str(&extra);
                         if octal.len() != 3 {
                             return Err(Error::Config("八进制转义必须三位".into()));
                         }
@@ -208,7 +248,11 @@ pub fn words(input: &str) -> Result<Vec<String>> {
             }
             '\'' | '"' if quote == Some(ch) => {
                 quote = None;
-                if chars.peek().is_some_and(|c| !c.is_ascii_whitespace()) {
+                if chars
+                    .get(index)
+                    .copied()
+                    .is_some_and(|c| !c.is_ascii_whitespace())
+                {
                     return Err(Error::Config("闭引号后必须是空白".into()));
                 }
             }
@@ -221,12 +265,17 @@ pub fn words(input: &str) -> Result<Vec<String>> {
             }
             c if c.is_ascii_whitespace() && quote.is_none() => {
                 if started {
-                    result.push(decoded_word(std::mem::take(&mut item))?);
+                    result.push(finish(std::mem::take(&mut item), literal)?);
                     started = false;
+                    content = false;
+                    after_eq = false;
+                    literal = None;
                 }
             }
             c => {
                 started = true;
+                content = true;
+                after_eq = c == '=';
                 if c == '\0' {
                     return Err(Error::Config("不允许 NUL".into()));
                 }
@@ -238,9 +287,23 @@ pub fn words(input: &str) -> Result<Vec<String>> {
         return Err(Error::Config("引号未闭合".into()));
     }
     if started {
-        result.push(decoded_word(item)?);
+        result.push(finish(item, literal)?);
     }
     Ok(result)
+}
+
+/// 结束一个参数：先归一化字面路径片段，再校验整体 UTF-8。参数：bytes 为参数字节，literal 为字面片段起点。返回：参数文本。
+fn finish(mut bytes: Vec<u8>, literal: Option<usize>) -> Result<String> {
+    let Some(start) = literal else {
+        return decoded_word(bytes);
+    };
+    let tail = std::str::from_utf8(&bytes[start..])
+        .map_err(|_| Error::Config("路径片段不是有效 UTF-8".into()))?;
+    let path = crate::paths::normalize(tail)
+        .ok_or_else(|| Error::Config(format!("不支持的绝对路径：{tail}")))?;
+    bytes.truncate(start);
+    bytes.extend_from_slice(path.as_bytes());
+    decoded_word(bytes)
 }
 
 /// 校验字节转义组合成有效 Unicode 参数。参数：bytes 为解码结果。返回：UTF-8 参数。
@@ -375,6 +438,7 @@ pub fn expand_command(
         }
         out.push(value);
     }
+    // 变量展开后仍要求可执行文件为绝对路径；形式归一化在解析配置时完成。
     if out.first().is_none_or(|s| !windows_absolute(s)) {
         return Err(Error::Config("可执行文件必须是 Windows 绝对路径".into()));
     }
@@ -501,6 +565,29 @@ pub fn merge(unit: &mut Unit, source: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// 解析单值路径指令。参数：value 为指令值，name 为 unit 名，message 为诊断说明。返回：规范路径；空值返回 None。
+/// 允许用成对引号包围含空格的路径；反斜杠按字面处理，不做 C 转义。
+fn single_path(value: &str, name: &str, message: &str) -> Result<Option<String>> {
+    let text = specifiers(value, name)?;
+    let text = text.trim_ascii();
+    let mut chars = text.chars();
+    // 只有首尾成对且同类的引号才算包围，避免把单个引号当成路径内容。
+    let path = match (chars.next(), chars.next_back()) {
+        (Some(open), Some(close))
+            if text.len() >= 2 && open == close && matches!(open, '"' | '\'') =>
+        {
+            chars.as_str()
+        }
+        _ => text,
+    };
+    if path.is_empty() {
+        return Ok(None);
+    }
+    crate::paths::normalize(path)
+        .map(Some)
+        .ok_or_else(|| Error::Config(message.into()))
+}
+
 /// 应用一条指令。参数：unit 为定义，section/key/value 为已拆分指令。返回：结果。
 fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
     if key.starts_with("X-") {
@@ -520,13 +607,8 @@ fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
             }
         }
         ("Service", "StandardOutputDirectory") => {
-            let value = specifiers(value, &unit.name)?;
-            if !value.is_empty() && !windows_absolute(&value) {
-                return Err(Error::Config(
-                    "StandardOutputDirectory 必须为绝对路径".into(),
-                ));
-            }
-            unit.stdout_directory = (!value.is_empty()).then_some(value);
+            unit.stdout_directory =
+                single_path(value, &unit.name, "StandardOutputDirectory 必须为绝对路径")?;
         }
         ("Service", "MemoryMax") => {
             unit.memory_max = if value.is_empty() || value == "infinity" {
@@ -644,7 +726,7 @@ fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
             if value.is_empty() {
                 list.clear();
             } else {
-                let args: Vec<_> = words(value)?
+                let args: Vec<_> = path_words(value)?
                     .iter()
                     .map(|s| specifiers(s, &unit.name))
                     .collect::<Result<_>>()?;
@@ -657,17 +739,14 @@ fn apply(unit: &mut Unit, section: &str, key: &str, value: &str) -> Result<()> {
             }
         }
         ("Service", "WorkingDirectory") => {
-            let value = specifiers(value, &unit.name)?;
-            if !value.is_empty() && !windows_absolute(&value) {
-                return Err(Error::Config("WorkingDirectory 必须为绝对路径".into()));
-            }
-            unit.working_directory = (!value.is_empty()).then_some(value);
+            unit.working_directory =
+                single_path(value, &unit.name, "WorkingDirectory 必须为绝对路径")?;
         }
         ("Service", "Environment") => {
             if value.is_empty() {
                 unit.environment.clear();
             }
-            for assignment in words(value)? {
+            for assignment in path_words(value)? {
                 let (key, val) = assignment
                     .split_once('=')
                     .ok_or_else(|| Error::Config("Environment 必须包含 NAME=value".into()))?;

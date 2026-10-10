@@ -38,6 +38,109 @@ fn quoting_and_escaping() {
         ["A", "中", "A"]
     );
 }
+/// 验证配置中 Windows 路径的书写形式归一化。参数：无。返回：无。
+#[test]
+fn windows_path_forms() {
+    // 盘符、正斜杠、双反斜杠、MSYS 与 Cygwin 写法都归一化到同一形式；
+    // 网络路径和扩展长度前缀保留各自结构。
+    for (text, expected) in [
+        (r"C:\apps\api.exe", r"C:\apps\api.exe"),
+        (r"C:/apps/api.exe", r"C:\apps\api.exe"),
+        (r"C:\\apps\\api.exe", r"C:\apps\api.exe"),
+        (r"C:/apps\api.exe", r"C:\apps\api.exe"),
+        ("/c/apps/api.exe", r"C:\apps\api.exe"),
+        ("/C/apps/api.exe", r"C:\apps\api.exe"),
+        ("/cygdrive/c/apps/api.exe", r"C:\apps\api.exe"),
+        ("/cygdrive/C/apps/api.exe", r"C:\apps\api.exe"),
+        (r"\\server\share\api.exe", r"\\server\share\api.exe"),
+        ("//server/share/api.exe", r"\\server\share\api.exe"),
+        (r"\\?\C:\apps\api.exe", r"\\?\C:\apps\api.exe"),
+        ("//?/C:/apps/api.exe", r"\\?\C:\apps\api.exe"),
+        // 界面表单写出的引号加双写反斜杠形式，以及含空格的路径。
+        (r#""C:\\apps\\api.exe""#, r"C:\apps\api.exe"),
+        (
+            r#""C:/Program Files/app.exe" --port 80"#,
+            r"C:\Program Files\app.exe",
+        ),
+    ] {
+        let mut probe = Unit::new("app.service");
+        config::merge(
+            &mut probe,
+            "form.conf",
+            &format!("[Service]\nExecStart={text}\n"),
+        )
+        .unwrap();
+        assert_eq!(probe.exec_start[0][0], expected, "{text}");
+    }
+}
+/// 验证路径参数按字面处理、目录单值与转义边界。参数：无。返回：无。
+#[test]
+fn path_arguments_are_literal() {
+    let mut unit = Unit::new("app.service");
+    config::merge(
+        &mut unit,
+        "paths.conf",
+        r#"[Service]
+ExecStart=C:\apps\api.exe --config=C:\conf\app.ini --data=/d/data plain\sarg /c
+WorkingDirectory=D:/logs
+Environment=APP_HOME=C:\apps\app
+Environment=PATH=C:\bin;D:\tools
+"#,
+    )
+    .unwrap();
+    assert_eq!(
+        unit.exec_start[0],
+        [
+            r"C:\apps\api.exe",
+            r"--config=C:\conf\app.ini",
+            r"--data=D:\data",
+            "plain arg",
+            "/c"
+        ]
+    );
+    assert_eq!(unit.working_directory.as_deref(), Some(r"D:\logs"));
+    assert_eq!(unit.environment["APP_HOME"], r"C:\apps\app");
+    assert_eq!(unit.environment["PATH"], r"C:\bin;D:\tools");
+    // 非路径参数继续按 systemd 规则解码转义。
+    assert_eq!(
+        config::path_words(r"C:\app.exe a\sb \x41").unwrap(),
+        [r"C:\app.exe", "a b", "A"]
+    );
+}
+
+/// 验证单值目录指令的引号、空格及非法形式。参数：无。返回：无。
+#[test]
+fn single_path_directives() {
+    let mut unit = Unit::new("app.service");
+    config::merge(
+        &mut unit,
+        "out.conf",
+        "[Service]\nStandardOutputDirectory=\"E:/out put\"\n",
+    )
+    .unwrap();
+    assert_eq!(unit.stdout_directory.as_deref(), Some(r"E:\out put"));
+    assert_eq!(rpmm::paths::normalize("/c/").as_deref(), Some(r"C:\"));
+    // 相对路径、无盘符根路径，以及首段不是单个盘符字母的 Linux 风格路径都被拒绝。
+    for text in [
+        "ExecStart=relative.exe",
+        "ExecStart=/apps/api.exe",
+        "ExecStart=C:apps\\api.exe",
+        "WorkingDirectory=/apps",
+        "WorkingDirectory=C:apps",
+        "StandardOutputDirectory=relative",
+    ] {
+        assert!(
+            config::merge(
+                &mut unit.clone(),
+                "bad.conf",
+                &format!("[Service]\n{text}\n")
+            )
+            .is_err(),
+            "{text}"
+        );
+    }
+}
+
 /// 验证整行注释、重复节及续行。参数：无。返回：无。
 #[test]
 fn ordered_merge_and_continuation() {
@@ -47,7 +150,7 @@ fn ordered_merge_and_continuation() {
     assert_eq!(unit.description, "包含 # 和 ;");
     assert_eq!(unit.environment.len(), 2);
     config::merge(&mut unit, "override.conf", "[Service]\nExecStart=\nExecStart=C:/new.exe\nEnvironment=\nEnvironment=NEW=ok\n[Unit]\nWants=\n").unwrap();
-    assert_eq!(unit.exec_start[0], ["C:/new.exe"]);
+    assert_eq!(unit.exec_start[0], [r"C:\new.exe"]);
     assert_eq!(unit.environment.len(), 1);
     assert_eq!(unit.wants.len(), 2);
 }
@@ -98,7 +201,7 @@ fn expansion() {
     assert_eq!(
         config::expand_command(&unit.exec_start[0], &unit.environment, None).unwrap(),
         [
-            "C:/app.exe",
+            r"C:\app.exe",
             "hello world",
             "one two",
             "three",

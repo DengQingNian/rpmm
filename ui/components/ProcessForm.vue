@@ -8,9 +8,11 @@ import {
   NInput,
   NSelect,
   type FormInst,
+  type FormItemRule,
   type FormRules,
 } from "naive-ui";
 import type { ProcessDraft } from "../types";
+import { isWindowsPath, windowsPath } from "../paths";
 import { serviceDefaults } from "../serviceConfig";
 import ServiceOptionsForm from "./ServiceOptionsForm.vue";
 const props = defineProps<{ busy: boolean; visible: boolean; services: string[] }>();
@@ -36,9 +38,18 @@ const rules: FormRules = {
   executable: [
     { required: true, message: "请输入可执行文件路径", trigger: "blur" },
     {
-      pattern: /^(?:[a-zA-Z]:[\\/]|\\\\).+/,
-      message: "请使用 Windows 绝对路径",
-      trigger: "blur",
+      validator: (_rule: FormItemRule, value: string) => isWindowsPath(value ?? ""),
+      message:
+        "请输入 Windows 绝对路径，例如 C:\\Apps\\api.exe、C:/Apps/api.exe 或 /c/Apps/api.exe",
+      trigger: ["blur", "input"],
+    },
+  ],
+  // 工作目录可选，填写时必须是受支持的 Windows 绝对路径。
+  directory: [
+    {
+      validator: (_rule: FormItemRule, value: string) => !value || isWindowsPath(value),
+      message: "请输入 Windows 绝对路径，例如 D:\\Logs 或 D:/Logs",
+      trigger: ["blur", "input"],
     },
   ],
   delay: { required: true, message: "请输入重启等待时间", trigger: "blur" },
@@ -66,6 +77,10 @@ function resetOnOpen(visible: boolean): void {
   }
 }
 watch(() => props.visible, resetOnOpen);
+/** 归一化表单里的路径。参数：value 为用户输入。返回：规范 Windows 路径；无法识别时原样交给后端报错。 */
+function path(value: string): string {
+  return windowsPath(value) ?? value.trim();
+}
 /** 校验并提交新建表单。参数：无。返回：无。 */
 async function submit(): Promise<void> {
   if (props.busy) return;
@@ -81,8 +96,8 @@ async function submit(): Promise<void> {
   emit("create", {
     ...draft,
     name: draft.name.trim(),
-    executable: draft.executable.trim(),
-    directory: draft.directory.trim(),
+    executable: path(draft.executable),
+    directory: draft.directory.trim() ? path(draft.directory) : "",
   });
 }
 </script>
@@ -105,15 +120,17 @@ async function submit(): Promise<void> {
         placeholder="例如 本地 API 服务"
     /></NFormItem>
     <NFormItem label="可执行文件" path="executable"
-      ><NInput v-model:value="draft.executable" placeholder="C:/Apps/api.exe"
+      ><NInput
+        v-model:value="draft.executable"
+        placeholder="C:\Apps\api.exe 或 /c/Apps/api.exe"
     /></NFormItem>
     <NFormItem label="命令参数"
       ><NInput
         v-model:value="draft.args"
         placeholder="--port 8080（含空格的参数使用双引号）"
     /></NFormItem>
-    <NFormItem label="工作目录"
-      ><NInput v-model:value="draft.directory" placeholder="C:/Apps（可选）"
+    <NFormItem label="工作目录" path="directory"
+      ><NInput v-model:value="draft.directory" placeholder="D:\Logs（可选）"
     /></NFormItem>
     <div class="form-columns">
       <NFormItem label="重启策略"

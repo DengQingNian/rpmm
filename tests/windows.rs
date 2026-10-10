@@ -189,6 +189,50 @@ fn environment_and_working_directory() {
         root
     );
 }
+
+/// 验证配置里的原生反斜杠路径可直接加载并启动真实进程。参数：无。返回：无。
+#[test]
+fn native_backslash_paths_from_configuration() {
+    let root = root("native-paths");
+    let output = root.join("custom/out");
+    let fixture = fixture();
+    std::fs::write(
+        root.join("units/app.service"),
+        format!(
+            "[Service]\nExecStart=\"{fixture}\" env\nWorkingDirectory={}\nEnvironment=RPMM_TEST_ENV=C:\\temp\\value\nStandardOutputDirectory={}\n",
+            root.display(),
+            output.display()
+        ),
+    )
+    .unwrap();
+    let units = rpmm::config::load(&root.join("units")).unwrap();
+    let unit = units.get("app.service").unwrap();
+    // 配置原文与归一化结果一致，说明反斜杠没有被当成转义序列解码。
+    assert_eq!(
+        unit.exec_start[0][0],
+        rpmm::paths::normalize_path(Path::new(&fixture))
+            .display()
+            .to_string()
+    );
+    assert_eq!(
+        unit.working_directory.as_deref(),
+        Some(root.to_string_lossy().as_ref())
+    );
+    assert_eq!(unit.environment["RPMM_TEST_ENV"], r"C:\temp\value");
+    let logger = Logger::new(&root.join("logs")).unwrap();
+    let child = Native
+        .spawn(unit, &unit.exec_start[0], 1, None, &logger)
+        .unwrap();
+    assert_eq!(wait(child.as_ref()), 0);
+    drop(child);
+    let text = std::fs::read_to_string(output.join("app.service.stdout.log")).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(value["value"], r"C:\temp\value");
+    assert_eq!(
+        std::fs::canonicalize(value["directory"].as_str().unwrap()).unwrap(),
+        root
+    );
+}
 /// 验证双流输出超过管道容量时不会死锁。参数：无。返回：无。
 #[test]
 fn concurrent_large_output() {

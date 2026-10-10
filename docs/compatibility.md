@@ -16,8 +16,9 @@
 | Type=simple/exec | Windows 近似 | 创建并恢复 Windows 进程即激活；两者在此平台使用相同边界 |
 | Type=oneshot、RemainAfterExit | 兼容子集 | 顺序多命令；成功后可保留 active/exited；首版仍要求合理的启动/停止组合 |
 | ExecStart、ExecStop | 兼容子集/Windows 近似 | systemd 分词及变量展开；Windows 绝对可执行路径；标准 Windows argv 编码 |
+| 路径书写形式 | rpmm 扩展 | `C:\xx`、`C:/xx`、`C:\\xx`、`/c/xx`、`/cygdrive/c/xx`、`\\server\share` 统一归一化为 `C:\xx`；绝对路径片段按字面处理，不解码 C 转义；无盘符与相对路径仍拒绝 |
 | 命令环境变量、specifier | 兼容子集 | `${VAR}`、独立 `$VAR`、`$$`、停止时 MAINPID、`%n`、`%%` |
-| Environment、WorkingDirectory | Windows 近似 | 继承管理器环境，覆盖 Windows 变量；未指定目录使用 SystemRoot/System32 |
+| Environment、WorkingDirectory | Windows 近似 | 继承管理器环境，覆盖 Windows 变量；取值中的绝对路径同样按字面归一化；未指定目录使用 SystemRoot/System32 |
 | Restart | 兼容子集 | no、always、on-failure、on-success；非零退出、启动错误、超时视为失败；不实现 POSIX 信号分类 |
 | RestartSec、TimeoutStartSec、TimeoutStopSec | 兼容子集 | RestartSec 必须有限；启动/停止超时可 infinity；停止超时逐条应用 |
 | HealthType、HealthPort、HealthUrl、HealthTimeoutSec、HealthIntervalSec | rpmm 扩展 | TCP 探测本机端口；HTTP/HTTPS 直接响应 200 成功；默认超时 1 秒、间隔 10 秒，记录历史但不自动重启 |

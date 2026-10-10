@@ -82,7 +82,7 @@ const refreshOptions = computed(() =>
       </div>
       <div class="setting-block">
         <strong>数据目录</strong
-        ><NInput v-model:value="desktop.state.settingsDraft.root" :disabled="desktop.locked.value || !desktop.state.settings" placeholder="输入 Windows 绝对路径" />
+        ><NInput v-model:value="desktop.state.settingsDraft.root" :disabled="desktop.locked.value || !desktop.state.settings" placeholder="例如 C:\rpmm 或 /c/rpmm" />
         <NButton :disabled="desktop.locked.value || !desktop.state.settings" @click="desktop.chooseRoot">选择文件夹</NButton>
         <p>当前使用：{{ desktop.state.settings?.root || "请通过桌面应用读取" }}</p>
         <p>

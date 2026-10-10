@@ -36,6 +36,7 @@ npm run tauri build
 npm run build
 npm run test:logs
 npm run test:config
+npm run test:paths
 npm run test:categories
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -59,7 +60,7 @@ cargo test -p rpmm --all-features
 - **配置导入导出**：配置页多选服务后通过系统保存对话框导出版本一 JSON 配置包，保留主配置、覆盖文件原文及启用状态。关联服务需要一并选择。导入包最大 16 MiB；整包校验名称、文本和依赖图后提交，默认拒绝同名服务，可明确选择替换。替换会删除包内未包含的旧覆盖文件；普通写盘失败恢复原文并报告恢复错误。导入不立即启动或重启服务，运行实例保留原快照。
 - **保存配置**：保存前校验完整候选图，包括仍在运行的实例依赖快照；校验失败不修改原文件和运行定义。编辑期间若文件被其他操作修改，保存会拒绝覆盖。配置编辑限制为不含 NUL 的 UTF-8 文本，最大 1 MiB；拒绝路径穿越、链接和重解析点。
 - **保存并重启**：先保存并重载，再执行所选子进程的重启事务；如果重启失败，界面会说明配置已保存，同时保留失败诊断。重启 required unit 会传播到运行中的依赖者。
-- **应用设置**：启用/取消登录自启动、设置手动启动时隐藏窗口、调整 0.5～10 秒的状态和资源监控刷新间隔；日志面板使用独立刷新设置。数据目录支持输入绝对路径或选择文件夹，保存后下次启动应用生效；登录自启动使用保存的新目录。已有配置及日志不自动搬迁，显式 `--root` 优先于界面设置。
+- **应用设置**：启用/取消登录自启动、设置手动启动时隐藏窗口、调整 0.5～10 秒的状态和资源监控刷新间隔；日志面板使用独立刷新设置。数据目录支持输入绝对路径或选择文件夹，接受 `C:\...`、`C:/...`、`/c/...` 等写法，保存后下次启动应用生效；登录自启动使用保存的新目录。已有配置及日志不自动搬迁，显式 `--root` 优先于界面设置。
 - **托盘运行**：关闭和最小化窗口都收起到托盘，子进程继续运行。左键点击托盘恢复窗口；右键菜单可打开控制台或退出。应用设置中也可明确退出，退出时等待子进程按依赖逆序停止并清理进程树。
 
 自启动指**当前用户登录 Windows 后启动**，无人登录时不运行。首次使用默认不开启系统自启动；子进程是否随 rpmm 启动由各自的启用状态决定，与 rpmm 是否随登录启动分别设置。主窗口启动和重复打开由单实例插件协调；桌面管理器与 CLI 前台管理器通过按 root 隔离的独占管道避免重复托管。
@@ -75,7 +76,7 @@ npm run tauri dev -- -- --root F:/proj/rpmm/temp/demo
 
 ## 前台运行
 
-桌面和 CLI 首次默认数据目录均为 `%LOCALAPPDATA%/rpmm`，可以通过 `--root` 指定独立目录。桌面设置的数据目录选择保存在默认目录的 `state/data-root.json`，仅桌面启动读取；CLI 仍使用自己的默认目录或显式 `--root`。目录包含 `units/`（期望配置）、`state/enabled.json`（子进程启用状态）、`state/desktop.json`（界面设置）、`state/categories.json`（配置目录分类）、`logs/`（运行日志）；更改 root 不会搬迁已有配置。
+桌面和 CLI 首次默认数据目录均为 `%LOCALAPPDATA%/rpmm`，可以通过 `--root` 指定独立目录：`C:\...`、`C:/...`、`/c/...`、`/cygdrive/c/...` 都按 Windows 绝对路径归一化，其他写法按相对路径解析。桌面设置的数据目录选择保存在默认目录的 `state/data-root.json`，仅桌面启动读取；CLI 仍使用自己的默认目录或显式 `--root`。目录包含 `units/`（期望配置）、`state/enabled.json`（子进程启用状态）、`state/desktop.json`（界面设置）、`state/categories.json`（配置目录分类）、`logs/`（运行日志）；更改 root 不会搬迁已有配置。
 
 在项目目录中运行：
 
@@ -112,9 +113,9 @@ target/release/rpmm.exe --root temp/demo delete demo.service --stop
 
 unit 名称大小写必须与依赖引用一致；名称采用普通 ASCII 文件名，Windows 保留名称、模板、别名和其他 unit 类型均拒绝。配置支持 UTF-8（允许 BOM）、CRLF、整行 `#`/`;` 注释、重复节、续行、重复指令和同名 `unit.service.d/*.conf` 按文件名排序合并。值里的 `#`/`;` 不作为行内注释。
 
-命令首先按 systemd 引号和转义规则生成 argv，再按 Windows 标准命令行规则编码。建议使用 `C:/...` 路径；反斜杠必须按 systemd 规则写成 `\\`。不自动经过 shell，PowerShell/Python/批处理必须显式调用解释器。支持 `${VAR}`（一个参数内展开）、独立 `$VAR`（分词展开）、`$$`（字面美元符）、`%n`、`%%`；`$MAINPID` 仅在停止命令中提供。PowerShell 自己的变量需写成 `$$变量`，例如 `$$true` 和 `$$env:MESSAGE`。
+命令首先按 systemd 引号和转义规则生成 argv，再按 Windows 标准命令行规则编码。路径可以使用 `C:\xx\yy`、`C:/xx/yy`、`C:\\xx\\yy`、`/c/xx/yy`、`/cygdrive/c/xx/yy`、`\\server\share\yy` 等写法，配置加载时统一归一化为 `C:\xx\yy`（盘符大写、折叠重复分隔符、去掉末尾分隔符）。词首或以 `=` 起始的值若以绝对路径开头，该片段按字面保留，不再解码 `\t`、`\n`、`\x41` 等 C 转义，避免 `C:\tools`、`C:\new` 被改写；其余参数仍按 systemd 规则解码，`\s`、`\x41`、`\\` 保持原有含义。不自动经过 shell，PowerShell/Python/批处理必须显式调用解释器。支持 `${VAR}`（一个参数内展开）、独立 `$VAR`（分词展开）、`$$`（字面美元符）、`%n`、`%%`；`$MAINPID` 仅在停止命令中提供。PowerShell 自己的变量需写成 `$$变量`，例如 `$$true` 和 `$$env:MESSAGE`。
 
-`Environment=` 保留继承环境并覆盖指定变量；Windows 环境变量名合并和查询时不区分大小写，同名覆盖按最后一条指令生效。环境值不再做 `$` 展开。独立 `$VAR` 使用 systemd 的分词、去引号和普通反斜杠处理；传递 Windows 路径时优先使用 `${VAR}`，保留空格及反斜杠。未指定 `WorkingDirectory` 时使用 Windows 系统目录；所有可执行文件和显式工作目录必须为 Windows 绝对路径。
+`Environment=` 保留继承环境并覆盖指定变量；Windows 环境变量名合并和查询时不区分大小写，同名覆盖按最后一条指令生效。环境值不再做 `$` 展开；`NAME=C:\path` 这类取值同样按字面路径处理。独立 `$VAR` 使用 systemd 的分词、去引号和普通反斜杠处理；传递 Windows 路径时优先使用 `${VAR}`，保留空格及反斜杠。未指定 `WorkingDirectory` 时使用 Windows 系统目录；所有可执行文件和显式工作目录必须为 Windows 绝对路径，`WorkingDirectory` 与 `StandardOutputDirectory` 是单值路径，含空格时可用引号包围。
 
 `Requires`/`Wants` 拉入启动任务；`After`/`Before` 只排序同一事务内已有任务。仅写 `After` 不会启动引用对象。强依赖启动失败只有在同时排序在前时阻止依赖者；弱依赖失败不阻止它。需求闭包去重，排序环路拒绝；未成功启动的根返回失败，但成功依赖不回滚。显式停止/重启 required unit 会向依赖者传播；依赖自己退出不会触发传播。
 

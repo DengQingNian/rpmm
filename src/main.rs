@@ -90,7 +90,8 @@ fn main() -> std::process::ExitCode {
 /// 调度校验和异步管理命令。参数：cli 为参数。返回：操作结果。
 fn run(cli: Cli) -> Result<()> {
     let root = cli.root.unwrap_or_else(rpmm::desktop::default_root);
-    let root = std::path::absolute(root)?;
+    // 数据目录同样接受 C:/、C:\、/c/ 等写法；相对路径仍按当前目录解析。
+    let root = std::path::absolute(rpmm::paths::normalize_path(&root))?;
     // 控制命令不得隐式创建数据目录；只有前台管理器可以创建。
     if matches!(
         &cli.command,

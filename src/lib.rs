@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod logging;
 pub mod manager;
 pub mod metrics;
+pub mod paths;
 pub mod platform;
 pub mod policy;
 #[cfg(windows)]

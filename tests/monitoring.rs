@@ -215,7 +215,7 @@ fn real_metrics_use_two_samples() {
 fn output_and_resource_configuration() {
     let mut unit = Unit::new("app.service");
     config::merge(&mut unit, "app.service", "[Service]\nExecStart=C:/app.exe\nStandardOutputDirectory=D:/output files\nMemoryMax=2G\nCPUQuota=25%\n").unwrap();
-    assert_eq!(unit.stdout_directory.as_deref(), Some("D:/output files"));
+    assert_eq!(unit.stdout_directory.as_deref(), Some(r"D:\output files"));
     assert_eq!(unit.memory_max, Some(2 * 1024usize.pow(3)));
     assert_eq!(unit.cpu_quota, Some(25));
     for text in [
