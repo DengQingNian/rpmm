@@ -2,7 +2,18 @@
 
 使用 systemd 配置子集托管 Windows 子进程的 Tauri 2 桌面应用。桌面进程直接运行 Rust 管理器，提供进程监控、配置编辑、日志、依赖编排、自动重启和进程树清理。运行于当前登录用户的会话，不依赖 Windows 服务、服务账户或管理员权限。
 
-支持 Windows 10/11 x64，桌面界面需要 Microsoft Edge WebView2 Runtime。目标程序应在前台运行，不应自行守护化；全部 unit 继承当前登录用户的账户、环境和权限。
+支持 Windows 10/11 x64，Windows Server 同样可以运行。目标程序应在前台运行，不应自行守护化；全部 unit 继承当前登录用户的账户、环境和权限。
+
+桌面界面基于 Tauri 2，依赖 Microsoft Edge WebView2 Runtime。Windows 11 和较新的 Windows 10 通常已随系统或 Edge 提供；**老旧 Windows 10 或 Windows Server 如果缺少该运行时，界面会无法创建窗口**，请先安装仓库内的 x64 离线运行时：
+
+```powershell
+# 老旧 Windows 或 Windows Server：先安装 WebView2 运行时以兼容 Tauri 界面
+docs\MicrosoftEdgeWebView2RuntimeInstallerX64.exe
+# 无交互安装（适合脚本部署）：
+docs\MicrosoftEdgeWebView2RuntimeInstallerX64.exe /silent /install
+```
+
+安装包约 200 MiB，由 Git LFS 托管，克隆或拉取仓库后需执行 `git lfs pull` 才能取得完整文件（未安装 Git LFS 时它只是一个指针文件）。安装完成后无需重启即可运行桌面程序；用 `Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'` 可以确认已安装版本。NSIS 安装包默认在安装时联网下载 WebView2 引导程序，内网或离线机器请先手工安装上述运行时。
 
 构建需要 Rust 1.90 或更新版本、MSVC Windows 工具链和 Node.js 22.12 或更新版本。
 

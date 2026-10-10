@@ -1,0 +1,2 @@
+# WebView2 离线运行时约 200 MiB，使用 Git LFS 存储，克隆后需执行 git lfs pull
+docs/*.exe filter=lfs diff=lfs merge=lfs -text
