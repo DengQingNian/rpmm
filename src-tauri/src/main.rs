@@ -114,6 +114,24 @@ async fn save_document(
         .map_err(|error| error.to_string())
 }
 
+/// 删除一个服务的全部配置。参数：state 为状态，unit 为名称，stop 表示是否先停止实例，expected 为编辑时主配置原文。返回：版本或诊断。
+#[tauri::command]
+async fn delete_service(
+    state: State<'_, DesktopState>,
+    unit: String,
+    stop: bool,
+    expected: Option<String>,
+) -> Result<u64, String> {
+    if state.quitting.load(Ordering::SeqCst) {
+        return Err("应用正在退出".into());
+    }
+    state
+        .manager
+        .delete_service(&unit, stop, expected.as_deref())
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// 查询历史日志。参数：state 为状态，unit/source/lines 为名称、可选来源和行数。返回：最近的有界记录。
 #[tauri::command]
 async fn logs(
@@ -481,6 +499,7 @@ fn main() {
             reload,
             documents,
             save_document,
+            delete_service,
             logs,
             metrics,
             health_status,

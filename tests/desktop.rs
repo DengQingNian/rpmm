@@ -412,3 +412,135 @@ async fn bundle_disk_failure_rolls_back() {
         config::Restart::No
     );
 }
+
+/// 验证删除服务会移除主配置、覆盖目录与启用状态，且不影响其他服务。参数：无。返回：无。
+#[tokio::test]
+async fn delete_service_removes_documents_and_enabled() {
+    let root = root();
+    let manager = Manager::new(&root).unwrap();
+    manager
+        .save_document("app.service", BASE, None)
+        .await
+        .unwrap();
+    manager
+        .save_document(
+            "app.service.d/20-local.conf",
+            "[Service]\nRestart=always\n",
+            None,
+        )
+        .await
+        .unwrap();
+    manager
+        .save_document("keep.service", BASE, None)
+        .await
+        .unwrap();
+    manager.enable("app.service", true).await.unwrap();
+    // 外部修改后使用旧正文删除会被拒绝，先确认冲突保护不落盘。
+    let changed = BASE.replace("Restart=no", "Restart=always");
+    std::fs::write(root.join("units/app.service"), &changed).unwrap();
+    assert!(
+        manager
+            .delete_service("app.service", false, Some(BASE))
+            .await
+            .is_err()
+    );
+    assert!(root.join("units/app.service").exists());
+    assert_eq!(
+        manager
+            .delete_service("app.service", false, Some(&changed))
+            .await
+            .unwrap(),
+        5
+    );
+    assert!(!root.join("units/app.service").exists());
+    assert!(!root.join("units/app.service.d").exists());
+    assert!(root.join("units/keep.service").exists());
+    let statuses = manager.status(None).unwrap();
+    assert_eq!(statuses.len(), 1);
+    assert_eq!(statuses[0].name, "keep.service");
+    assert!(manager.status(Some("app.service")).is_err());
+    assert_eq!(
+        std::fs::read_to_string(root.join("state/enabled.json"))
+            .unwrap()
+            .trim(),
+        "[]"
+    );
+}
+
+/// 验证被引用和缺失的服务不能删除，解除引用后可以删除。参数：无。返回：无。
+#[tokio::test]
+async fn delete_service_refuses_referenced_and_missing_units() {
+    let root = root();
+    let manager = Manager::new(&root).unwrap();
+    manager
+        .save_document("db.service", BASE, None)
+        .await
+        .unwrap();
+    manager
+        .save_document(
+            "app.service",
+            &format!("[Unit]\nRequires=db.service\nAfter=db.service\n{BASE}"),
+            None,
+        )
+        .await
+        .unwrap();
+    let error = manager
+        .delete_service("db.service", false, None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("app.service") && error.contains("Requires"));
+    assert!(root.join("units/db.service").exists());
+    assert!(
+        manager
+            .delete_service("missing.service", false, None)
+            .await
+            .is_err()
+    );
+    std::fs::write(root.join("units/app.service"), BASE).unwrap();
+    manager
+        .delete_service("db.service", false, None)
+        .await
+        .unwrap();
+    assert!(!root.join("units/db.service").exists());
+    assert_eq!(manager.status(None).unwrap().len(), 1);
+}
+
+/// 验证删除过程中删盘失败会恢复已删除文件，运行定义不变。参数：无。返回：无。
+#[tokio::test]
+#[cfg(windows)]
+async fn delete_service_disk_failure_rolls_back() {
+    let root = root();
+    let manager = Manager::new(&root).unwrap();
+    manager
+        .save_document("app.service", BASE, None)
+        .await
+        .unwrap();
+    let dropin = "[Service]\nRestart=always\n";
+    manager
+        .save_document("app.service.d/20-local.conf", dropin, None)
+        .await
+        .unwrap();
+    // 主配置先被删除，随后覆盖文件因共享模式拒绝删除，触发恢复。
+    use std::os::windows::fs::OpenOptionsExt;
+    let _blocked = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(root.join("units/app.service.d/20-local.conf"))
+        .unwrap();
+    let error = manager
+        .delete_service("app.service", false, Some(BASE))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(!error.contains("恢复配置失败"));
+    assert_eq!(
+        std::fs::read_to_string(root.join("units/app.service")).unwrap(),
+        BASE
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("units/app.service.d/20-local.conf")).unwrap(),
+        dropin
+    );
+    assert_eq!(manager.status(None).unwrap().len(), 1);
+}

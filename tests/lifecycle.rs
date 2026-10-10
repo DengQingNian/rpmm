@@ -658,3 +658,64 @@ async fn unhealthy_dependencies_timeout_and_cancel() {
     assert!(start.await.unwrap().is_err());
     manager.shutdown().await.unwrap();
 }
+
+/// 验证运行中的服务必须先停止才能删除，未运行状态可直接删除。参数：无。返回：无。
+#[tokio::test]
+async fn delete_running_service_requires_stop() {
+    let root = root();
+    write(&root, "a.service", "[Service]\nExecStart=C:/fake.exe\n");
+    let fake = Arc::new(Fake::default());
+    let manager = Manager::with_backend(&root, fake.clone()).unwrap();
+    manager.start(&["a.service".into()]).await.unwrap();
+    expect(&manager, "a.service", State::Active).await;
+    let error = manager
+        .delete_service("a.service", false, None)
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("正在运行"));
+    assert!(root.join("units/a.service").exists());
+    manager
+        .delete_service("a.service", true, None)
+        .await
+        .unwrap();
+    assert!(!root.join("units/a.service").exists());
+    assert!(manager.status(Some("a.service")).is_err());
+    assert!(
+        fake.events
+            .lock()
+            .unwrap()
+            .contains(&"kill:a.service".into())
+    );
+    // 已删除的服务不再出现在状态列表中，管理器关闭时也不会再触碰它。
+    assert!(manager.status(None).unwrap().is_empty());
+    manager.shutdown().await.unwrap();
+}
+
+/// 验证启动中的服务删除时需要先停止，停止会取消尚未完成的激活。参数：无。返回：无。
+#[tokio::test]
+async fn delete_activating_service_cancels_start() {
+    let root = root();
+    write(
+        &root,
+        "a.service",
+        "[Service]\nType=oneshot\nExecStart=C:/fake.exe\n",
+    );
+    let manager = Manager::with_backend(&root, Arc::new(Fake::default())).unwrap();
+    let worker = manager.clone();
+    let start = tokio::spawn(async move { worker.start(&["a.service".into()]).await });
+    expect(&manager, "a.service", State::Activating).await;
+    assert!(
+        manager
+            .delete_service("a.service", false, None)
+            .await
+            .is_err()
+    );
+    manager
+        .delete_service("a.service", true, None)
+        .await
+        .unwrap();
+    assert!(start.await.unwrap().is_err());
+    assert!(!root.join("units/a.service").exists());
+    manager.shutdown().await.unwrap();
+}

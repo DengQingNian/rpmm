@@ -25,6 +25,7 @@ import {
   Settings2,
   Square,
   SquarePen,
+  Trash2,
   TriangleAlert,
 } from "@lucide/vue";
 
@@ -52,6 +53,7 @@ export const icons = {
   restart: RotateCcw,
   reset: CircleCheck,
   save: Save,
+  remove: Trash2,
   file: FileText,
   folder: FolderOpen,
   home: House,

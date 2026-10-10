@@ -816,12 +816,7 @@ impl Manager {
                 return Err(Error::Config(format!("不能删除运行中的 unit：{name}")));
             }
         }
-        let mut effective = candidate.clone();
-        for (name, job) in self.jobs.lock().unwrap().iter() {
-            if !*job.done.borrow() {
-                effective.insert(name.clone(), job.unit.clone());
-            }
-        }
+        let effective = self.effective(candidate);
         graph::order(&effective, &effective.keys().cloned().collect())?;
         Ok(())
     }
@@ -863,6 +858,168 @@ impl Manager {
         atomic_write(&path, text.as_bytes())?;
         Ok(self.apply_candidate(candidate))
     }
+    /// 合并候选定义与仍在运行的实例快照。参数：candidate 为候选定义。返回：实际生效的定义表。
+    fn effective(&self, candidate: &Units) -> Units {
+        let mut effective = candidate.clone();
+        for (name, job) in self.jobs.lock().unwrap().iter() {
+            if !*job.done.borrow() {
+                effective.insert(name.clone(), job.unit.clone());
+            }
+        }
+        effective
+    }
+    /// 检查生效定义中其他服务是否仍引用目标服务。参数：name 为待删除的 unit 名，candidate 为删除后的候选定义。返回：无引用时成功，否则列出引用者。
+    fn ensure_unreferenced(&self, name: &str, candidate: &Units) -> Result<()> {
+        // 依赖引用会让被删除服务的启动闭包直接失败，因此整份删除前先收集全部生效定义中的引用者。
+        let mut referrers = BTreeSet::new();
+        for (other, unit) in self.effective(candidate) {
+            if other == name {
+                continue;
+            }
+            for (directive, dependencies) in [
+                ("Requires", &unit.requires),
+                ("Wants", &unit.wants),
+                ("After", &unit.after),
+                ("Before", &unit.before),
+                ("HealthAfter", &unit.health_after),
+            ] {
+                if dependencies.iter().any(|dependency| dependency == name) {
+                    referrers.insert(format!("{other}({directive})"));
+                }
+            }
+        }
+        if referrers.is_empty() {
+            return Ok(());
+        }
+        Err(Error::Config(format!(
+            "以下服务仍引用 {name}：{}；请先解除引用后再删除",
+            referrers.into_iter().collect::<Vec<_>>().join("、")
+        )))
+    }
+
+    /// 生成删除目标后的候选定义，并完成编辑冲突与引用检查。参数：name 为服务名，expected 为编辑时主配置原文（None 跳过检查）。返回：待删除文档和候选定义。
+    fn deletion_candidate(
+        &self,
+        name: &str,
+        expected: Option<&str>,
+    ) -> Result<(Vec<crate::desktop::Document>, Units)> {
+        let documents = crate::desktop::documents(&self.root, name)?;
+        // 编辑期间文件被其他操作修改时拒绝删除，避免用陈旧视图删掉新配置。
+        if let Some(expected) = expected
+            && let Some(main) = documents.iter().find(|document| document.name == name)
+            && main.text != expected
+        {
+            return Err(Error::Operation(
+                "配置已被其他操作修改，请重新打开后再删除".into(),
+            ));
+        }
+        let mut candidate = config::load(&self.root.join("units"))?;
+        candidate.remove(name);
+        self.ensure_unreferenced(name, &candidate)?;
+        Ok((documents, candidate))
+    }
+
+    /// 判断服务是否有未结束的监督任务。参数：name 为服务名。返回：启动中、运行中或停止中时为真。
+    fn running(&self, name: &str) -> bool {
+        self.jobs
+            .lock()
+            .unwrap()
+            .get(name)
+            .is_some_and(|job| !*job.done.borrow())
+    }
+
+    /// 删除一个服务的全部配置并重载。参数：name 为服务名，stop 表示是否先停止运行实例，expected 为编辑时主配置原文（None 跳过冲突检查）。返回：新配置版本；删盘失败时恢复已删除文件。
+    pub async fn delete_service(
+        &self,
+        name: &str,
+        stop: bool,
+        expected: Option<&str>,
+    ) -> Result<u64> {
+        // 锁外先做只读检查，避免明显非法的请求取消他人的启动事务。
+        config::validate_name(name)?;
+        self.deletion_candidate(name, expected)?;
+        if self.running(name) && !stop {
+            return Err(Error::Operation(format!(
+                "{name} 正在运行，请先停止服务，或选择停止后删除"
+            )));
+        }
+        // 与显式停止一致：先请求取消尚未完成的启动事务，再等待事务锁。
+        if stop {
+            let selected = graph::stop_set(&self.snapshots(), &[name.to_string()]);
+            self.interrupt(&selected);
+        }
+        let _guard = self.transaction.lock().await;
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err(Error::Operation("管理器正在关闭".into()));
+        }
+        // 等待事务锁期间配置可能变化，锁内重新执行同一组检查。
+        let directory = self.root.join("units");
+        let (documents, candidate) = self.deletion_candidate(name, expected)?;
+        // 运行中的实例必须先停止：停止失败时保留配置，避免删掉仍在运行的服务的定义。
+        if self.running(name) {
+            if !stop {
+                return Err(Error::Operation(format!(
+                    "{name} 正在运行，请先停止服务，或选择停止后删除"
+                )));
+            }
+            let selected = graph::stop_set(&self.snapshots(), &[name.to_string()]);
+            self.interrupt(&selected);
+            self.stop_selected(&selected).await?;
+        }
+        // 候选图在写盘前完成校验，全部检查失败都不会触碰已有文件。
+        self.validate_candidate(&candidate)?;
+        let mut targets = Vec::new();
+        for document in &documents {
+            targets.push((
+                crate::desktop::document_path(&directory, &document.name)?,
+                document.text.clone(),
+            ));
+        }
+        let mut enabled = self.enabled.lock().unwrap().clone();
+        let enabled_changed = enabled.remove(name);
+        let mut applied: Vec<(PathBuf, String)> = Vec::new();
+        let commit = (|| -> Result<()> {
+            for (path, text) in &targets {
+                match std::fs::remove_file(path) {
+                    Ok(()) => applied.push((path.clone(), text.clone())),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            // 覆盖目录只在删除后为空时移除，保留其他工具写入的文件。
+            let _ = std::fs::remove_dir(directory.join(format!("{name}.d")));
+            if enabled_changed {
+                atomic_write(
+                    &self.root.join("state/enabled.json"),
+                    &serde_json::to_vec_pretty(&enabled)?,
+                )?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = commit {
+            let mut errors = vec![error.to_string()];
+            // 逆序恢复已删除的文档，完整报告恢复失败，便于用户手工处理。
+            for (path, text) in applied.iter().rev() {
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(error) = atomic_write(path, text.as_bytes()) {
+                    errors.push(format!("恢复配置失败：{error}"));
+                }
+            }
+            return Err(Error::Operation(errors.join("；")));
+        }
+        *self.enabled.lock().unwrap() = enabled;
+        // 清理实例记录，避免以后重建同名服务时复现旧的失败或健康状态。
+        self.jobs.lock().unwrap().remove(name);
+        self.statuses.lock().unwrap().remove(name);
+        self.health_records.lock().unwrap().remove(name);
+        self.health_history.lock().unwrap().remove(name);
+        let version = self.apply_candidate(candidate);
+        self.event("manager", 0, &format!("删除服务配置：{name}"));
+        Ok(version)
+    }
+
     /// 整包校验后导入配置并重载。参数：bundle 为配置包，overwrite 为是否允许替换同名服务。返回：新版本；磁盘失败时恢复原文。
     pub async fn import_bundle(
         &self,

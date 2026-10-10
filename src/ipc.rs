@@ -39,6 +39,11 @@ pub enum Action {
     ResetFailed {
         unit: String,
     },
+    Delete {
+        unit: String,
+        #[serde(default)]
+        stop: bool,
+    },
     Logs {
         unit: String,
         source: Option<String>,
@@ -156,6 +161,10 @@ async fn execute(manager: &Arc<Manager>, action: Action) -> Result<Value> {
         Action::DaemonReload => Ok(serde_json::to_value(manager.reload().await?)?),
         Action::ResetFailed { unit } => {
             manager.reset_failed(&unit).await?;
+            Ok(Value::Null)
+        }
+        Action::Delete { unit, stop } => {
+            manager.delete_service(&unit, stop, None).await?;
             Ok(Value::Null)
         }
         Action::Logs { .. } | Action::Shutdown => {

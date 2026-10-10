@@ -49,6 +49,11 @@ enum Command {
     ResetFailed {
         unit: String,
     },
+    Delete {
+        unit: String,
+        #[arg(long, help = "删除前先停止正在运行的实例")]
+        stop: bool,
+    },
     Logs {
         unit: String,
         #[arg(long)]
@@ -125,6 +130,7 @@ fn run(cli: Cli) -> Result<()> {
                 Command::Disable { unit } => Action::Disable { unit },
                 Command::DaemonReload => Action::DaemonReload,
                 Command::ResetFailed { unit } => Action::ResetFailed { unit },
+                Command::Delete { unit, stop } => Action::Delete { unit, stop },
                 Command::Logs {
                     unit,
                     follow,

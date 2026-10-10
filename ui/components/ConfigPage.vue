@@ -56,6 +56,9 @@ const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAf
           保存时校验所有配置及依赖。运行实例保留启动时的配置，重启后使用新定义。
         </p>
         <p>覆盖文件按名称顺序合并，优先于主文件中的同名标量设置。</p>
+        <p>
+          删除服务会移除主配置、覆盖文件和启用状态；运行中的实例需先停止，被其他服务引用时需先解除引用。
+        </p>
       </div>
     </section>
     <section class="paper editor-panel">
@@ -121,6 +124,17 @@ const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAf
         >
         <div>
           <NButton
+            type="error"
+            secondary
+            :disabled="
+              desktop.locked.value ||
+              desktop.state.editorLoading ||
+              !desktop.state.selected
+            "
+            @click="desktop.deleteService"
+            ><template #icon><AppIcon name="remove" /></template
+            >删除服务</NButton
+          ><NButton
             :disabled="
               desktop.locked.value ||
               desktop.state.editorLoading ||

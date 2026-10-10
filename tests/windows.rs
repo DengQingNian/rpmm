@@ -370,6 +370,85 @@ async fn ipc_control_and_exclusive_root() {
         rpmm::manager::State::Inactive
     );
 }
+/// 验证 IPC 删除动作移除配置和启用状态，运行中的实例需要显式停止。参数：无。返回：无。
+#[tokio::test(flavor = "multi_thread")]
+async fn ipc_delete_removes_service_config() {
+    let root = root("ipc-delete");
+    std::fs::write(
+        root.join("units/app.service"),
+        format!(
+            "[Service]\nExecStart=\"{}\" sleep\n[Install]\nWantedBy=multi-user.target\n",
+            fixture().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("units/keep.service"),
+        "[Service]\nExecStart=C:/fake.exe\n",
+    )
+    .unwrap();
+    let manager = Manager::new(&root).unwrap();
+    let (_stop_tx, stop_rx) = watch::channel(false);
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let server = tokio::spawn(rpmm::ipc::serve(manager.clone(), stop_rx, ready_tx));
+    ready_rx.await.unwrap().unwrap();
+    assert!(
+        request(
+            &root,
+            rpmm::ipc::Action::Enable {
+                unit: "app.service".into()
+            }
+        )
+        .await
+        .ok
+    );
+    assert!(
+        request(
+            &root,
+            rpmm::ipc::Action::Start {
+                unit: "app.service".into()
+            }
+        )
+        .await
+        .ok
+    );
+    // 运行中的服务不带 stop 会被拒绝，配置保持不变。
+    let refused = request(
+        &root,
+        rpmm::ipc::Action::Delete {
+            unit: "app.service".into(),
+            stop: false,
+        },
+    )
+    .await;
+    assert!(!refused.ok);
+    assert_eq!(refused.code, "operation-failed");
+    assert!(root.join("units/app.service").exists());
+    // 显式停止后删除成功，配置与启用状态一并清除。
+    assert!(
+        request(
+            &root,
+            rpmm::ipc::Action::Delete {
+                unit: "app.service".into(),
+                stop: true,
+            }
+        )
+        .await
+        .ok
+    );
+    assert!(!root.join("units/app.service").exists());
+    let listed = request(&root, rpmm::ipc::Action::List).await;
+    assert_eq!(listed.data.as_array().unwrap().len(), 1);
+    assert_eq!(listed.data[0]["name"], "keep.service");
+    assert!(!listed.data[0]["enabled"].as_bool().unwrap());
+    assert!(request(&root, rpmm::ipc::Action::Shutdown).await.ok);
+    tokio::time::timeout(Duration::from_secs(5), server)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+}
+
 /// 验证管道 DACL 无 Everyone/匿名授权且禁止远程客户端。参数：无。返回：无。
 #[tokio::test]
 async fn pipe_acl_is_explicit() {

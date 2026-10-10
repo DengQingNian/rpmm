@@ -462,6 +462,52 @@ export function useDesktop() {
     }, "磁盘配置已校验并重载");
   }
 
+  /** 删除选中服务的全部配置。参数：无。返回：无。
+   * 运行中的实例先确认停止；被其他服务引用或已被外部修改时后端会拒绝删除。 */
+  async function deleteService(): Promise<void> {
+    if (locked.value || state.editorLoading || !state.selected) return;
+    const unit = state.selected;
+    const status = selectedProcess.value;
+    const running = ["active", "activating", "deactivating"].includes(
+      status?.state ?? "",
+    );
+    // 只统计已落盘的覆盖文件，未保存的新草稿不参与删除。
+    const dropins = state.documents.filter(
+      (item) => item.name !== unit && persistedNames.has(item.name),
+    ).length;
+    if (!(await mayDiscard())) return;
+    const files = `主配置${dropins ? `和 ${dropins} 个覆盖文件` : ""}`;
+    if (
+      !(await confirm(
+        running ? "停止并删除服务配置？" : "删除服务配置？",
+        `${unit} 的${files}将被删除，启用状态一并移除${
+          running ? "，运行中的实例会先停止再删除" : ""
+        }。删除后无法撤销，被其他服务引用时需要先解除引用。`,
+        running ? "停止并删除" : "删除配置",
+      ))
+    )
+      return;
+    await mutate(async () => {
+      const expected =
+        state.documents.find((item) => item.name === unit)?.text ?? null;
+      await call("delete_service", { unit, stop: running, expected });
+      state.exportUnits = state.exportUnits.filter((name) => name !== unit);
+      state.documents = [];
+      state.document = "";
+      persistedNames.clear();
+      state.original = null;
+      state.text = "";
+      state.resources = null;
+      state.processHistory = [];
+      state.healthHistory = [];
+      state.records = [];
+      ++logGeneration;
+      ++metricsGeneration;
+      // 清空选择后由刷新逻辑接管，自动切换到剩余的第一个服务。
+      state.selected = "";
+    }, "服务配置已删除");
+  }
+
   /** 生成子进程配置。参数：draft 为新建表单。返回：无。 */
   async function createProcess(draft: ProcessDraft): Promise<void> {
     if (!(await mayDiscard())) return;
@@ -764,6 +810,7 @@ export function useDesktop() {
     operate,
     saveConfig,
     reload,
+    deleteService,
     createProcess,
     createDropin,
     saveSettings,
