@@ -1,0 +1,191 @@
+# 打 v* 标签或手动触发时，在 Windows 上构建安装包与命令行程序并发布 GitHub Release。
+# 产物：当前用户 NSIS 安装包、独立 CLI 压缩包、SHA256SUMS.txt；可选附带 WebView2 离线运行时。
+name: 发布
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 已推送的发布标签（例如 v0.3.0）；留空则只构建并上传工作流产物
+        required: false
+        type: string
+      draft:
+        description: 先创建草稿 Release，确认后再公开
+        required: false
+        type: boolean
+        default: true
+      include_webview2:
+        description: 附带 WebView2 离线运行时（Git LFS，约 200 MiB，消耗 LFS 流量）
+        required: false
+        type: boolean
+        default: false
+
+# 创建 Release 需要写权限，其余权限保持仓库默认设置。
+permissions:
+  contents: write
+
+# 同一个分支或标签的发布串行执行，避免两次运行同时上传产物。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  # package-lock.json 里的 133 个依赖都指向 npmmirror 镜像，CI 改回官方源，只替换该镜像主机名，
+  # 避免镜像跨境不稳定，同时不影响日后可能出现的其他下载地址。
+  NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+  NPM_CONFIG_REPLACE_REGISTRY_HOST: registry.npmmirror.com
+
+jobs:
+  windows-x64:
+    name: Windows x64 安装包
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v4
+        with:
+          # 完整历史供 gh 生成变更说明；WebView2 离线运行时按需从 Git LFS 拉取。
+          fetch-depth: 0
+          lfs: ${{ inputs.include_webview2 == true }}
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          # src-tauri 是同一工作区成员，构建产物统一写入仓库根 target 目录。
+          workspaces: ". -> target"
+
+      - name: 校验版本并解析发布信息
+        id: version
+        shell: pwsh
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # 手动触发用输入标签，标签推送用 ref 名；两者都没有时只构建工作流产物，不创建 Release。
+          $tag = "$env:INPUT_TAG".Trim()
+          if (-not $tag -and $env:REF_TYPE -eq "tag") { $tag = $env:REF_NAME }
+          $arguments = @("scripts/check-version.mjs", "--json")
+          if ($tag) { $arguments += @("--tag", $tag) }
+          # 版本检查失败时 node 返回非零退出码，这里立刻终止，避免把空版本号写成产物名继续构建。
+          $json = node $arguments
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::版本校验失败：标签与清单版本不一致，请先同步版本号。"
+            exit 1
+          }
+          $info = $json | ConvertFrom-Json
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$($info.version)" >> $env:GITHUB_OUTPUT
+          # 带连字符的版本号（如 0.3.0-rc.1）标记为预发布。
+          "prerelease=$(if ($info.version -match '-') { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+          "publish=$(if ($tag) { 'true' } else { 'false' })" >> $env:GITHUB_OUTPUT
+          Write-Host "清单版本 $($info.version)，发布标签 '$tag'"
+
+      - name: 安装前端依赖
+        run: npm ci
+
+      - name: 构建桌面程序与安装包
+        run: npm run tauri build
+
+      - name: 构建命令行程序
+        run: cargo build --package rpmm --release --locked
+
+      - name: 整理发布产物
+        id: package
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          INCLUDE_WEBVIEW2: ${{ inputs.include_webview2 }}
+        run: |
+          $stage = "temp/release"
+          if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+          New-Item -ItemType Directory -Force $stage | Out-Null
+
+          # 安装包由 Tauri 输出，文件名自带版本号，直接作为发布产物。
+          $installer = Get-ChildItem "target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $installer) { throw "未找到 NSIS 安装包，请检查 npm run tauri build 的输出" }
+          Copy-Item $installer.FullName $stage
+
+          # 命令行程序连同示例配置一起打包，解压后即可按 README 的“前台运行”章节试跑。
+          $cli = "temp/cli"
+          if (Test-Path $cli) { Remove-Item -Recurse -Force $cli }
+          New-Item -ItemType Directory -Force $cli | Out-Null
+          Copy-Item "target/release/rpmm.exe" $cli
+          Copy-Item "examples" "$cli/examples" -Recurse
+          $cliZip = "rpmm-cli_${env:VERSION}_x64.zip"
+          Compress-Archive -Path "$cli/*" -DestinationPath "$stage/$cliZip"
+          Remove-Item -Recurse -Force $cli
+
+          # 内网或离线机器需要 WebView2 离线运行时，按需附带。
+          if ($env:INCLUDE_WEBVIEW2 -eq "true") {
+            Copy-Item "docs/MicrosoftEdgeWebView2RuntimeInstallerX64.exe" $stage
+          }
+
+          # 生成校验和清单，方便分发后核对文件完整性。
+          $sums = Get-ChildItem $stage -File | Sort-Object Name | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          Set-Content -Path "$stage/SHA256SUMS.txt" -Value $sums -Encoding ascii
+
+          "installer=$($installer.Name)" >> $env:GITHUB_OUTPUT
+          "cli=$cliZip" >> $env:GITHUB_OUTPUT
+          Get-ChildItem $stage -File | Select-Object Name, Length
+
+      - name: 上传工作流产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpmm-${{ steps.version.outputs.version }}-x64
+          path: temp/release/*
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 创建或更新 Release
+        if: steps.version.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+          INSTALLER: ${{ steps.package.outputs.installer }}
+          CLI: ${{ steps.package.outputs.cli }}
+        run: |
+          $assets = Get-ChildItem "temp/release" -File | ForEach-Object { $_.FullName }
+
+          # 已存在同名 Release 时只补充产物，便于工作流失败后重跑；Release 的草稿状态保持不变。
+          gh release view $env:TAG --json tagName *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:TAG $assets --clobber
+            exit $LASTEXITCODE
+          }
+
+          # 说明文本由 gh 拼接在自动生成的变更日志之前。
+          $notes = @'
+          ## 安装
+
+          - 桌面程序：运行 `{0}`，按当前用户安装，不需要管理员权限。
+          - 命令行工具：解压 `{1}`，内含 rpmm.exe 与示例配置，用法见 README 的“前台运行”章节。
+          - `SHA256SUMS.txt` 是全部产物的 SHA-256 校验和。
+
+          老旧 Windows 10 或 Windows Server 缺少 Microsoft Edge WebView2 Runtime 时，安装程序会联网下载引导程序；内网或离线机器请先手工安装该运行时。
+          '@ -f $env:INSTALLER, $env:CLI
+
+          $arguments = @("release", "create", $env:TAG, "--title", "rpmm $env:VERSION", "--notes", $notes, "--generate-notes", "--verify-tag")
+          if ($env:PRERELEASE -eq "true") { $arguments += "--prerelease" }
+          if ($env:DRAFT -eq "true") { $arguments += "--draft" }
+          $arguments += $assets
+          gh $arguments

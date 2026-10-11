@@ -12,7 +12,8 @@
     "test:config": "node --experimental-strip-types tests/service-config.mjs",
     "test:paths": "node --experimental-strip-types tests/paths.mjs",
     "test:categories": "node --experimental-strip-types tests/categories.mjs",
-    "icons": "node scripts/build-icons.mjs"
+    "icons": "node scripts/build-icons.mjs",
+    "check:version": "node scripts/check-version.mjs"
   },
   "dependencies": {
     "@lucide/vue": "^1.53.0",

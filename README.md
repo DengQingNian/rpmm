@@ -47,6 +47,25 @@ cargo test -p rpmm --all-features
 
 应用标识为 `com.dengqn.app.rpmm`。图标采用透明背景、蓝色圆角六边形核心与三个青色服务节点，体现统一编排多个服务。界面标志引用 `ui/assets/icon.svg`；页签和托盘使用同轮廓的单色加粗版本 `ui/assets/icon-small.svg`。修改后执行 `npm run icons` 更新 `src-tauri/icons/` 中的 PNG、ICO、ICNS 和商店资源，再执行 `npm run tauri build` 重新打包。ICO 包含 16/24/32/48/64/128/256 七档尺寸，托盘直接嵌入 32 px 单色 PNG。独立 CLI 的 `build.rs` 使用 `embed-resource` 把同一 ICO 嵌入 `rpmm.exe`，执行 `cargo build -p rpmm --release` 更新。生成过程的中间文件位于 `temp/icon-build/`，设计来源和生成提示词见 [图标说明](docs/icons.md)。
 
+## 发布
+
+推送 `v*` 标签会触发 [发布工作流](.github/workflows/release.yml)，在 `windows-latest` 上运行 `npm run tauri build` 和 `cargo build -p rpmm --release`，把当前用户 NSIS 安装包、含示例配置的 CLI 压缩包和 `SHA256SUMS.txt` 上传为工作流产物并创建 GitHub Release；Release 说明由固定安装指引和自动生成的变更日志组成。
+
+```powershell
+# 1. 手工把 package.json、Cargo.toml、src-tauri/Cargo.toml、src-tauri/tauri.conf.json 的版本改为 0.3.0
+npm install --package-lock-only   # 同步 package-lock.json 中的版本
+cargo check --workspace           # 同步 Cargo.lock 中的版本
+npm run check:version             # 校验 7 处版本号一致
+# 2. 提交并推送标签，工作流据此构建
+git commit -am "chore: 发布 0.3.0"
+git tag v0.3.0
+git push origin master --tags
+```
+
+`npm run check:version -- --tag v0.3.0` 可以顺带核对标签；工作流在安装依赖前执行同一检查，标签与清单不一致时立即失败，不会产出与标签不符的安装包。版本号带后缀（如 `0.3.0-rc.1`）时自动标记为预发布；同一标签重跑工作流只补充产物，不会重复创建 Release。
+
+也可以在 Actions 页面手动运行工作流：`tag` 留空时只构建并上传工作流产物，用于验证打包链路；填写已推送的标签才会创建 Release，`draft` 决定是否先建草稿供人工确认，`include_webview2` 决定是否用 Git LFS 拉取约 200 MiB 的 WebView2 离线运行时并作为发布产物，供内网和离线机器使用。工作流只发布 Windows x64 产物，`src-tauri/tauri.conf.json` 仅配置 `nsis` 目标。
+
 ## 桌面使用
 
 - **Dashboard**：显示托管、运行、失败和随应用启动的进程数量，以及宿主机 CPU、物理内存、磁盘读写速率和各卷容量。ECharts 显示最近 120 次采样趋势；首次采样不显示未经差分的速率。
