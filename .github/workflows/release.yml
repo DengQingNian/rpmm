@@ -46,14 +46,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - name: 检出源码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # 完整历史供 gh 生成变更说明；WebView2 离线运行时按需从 Git LFS 拉取。
           fetch-depth: 0
           lfs: ${{ inputs.include_webview2 == true }}
 
       - name: 安装 Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -145,7 +145,7 @@ jobs:
           Get-ChildItem $stage -File | Select-Object Name, Length
 
       - name: 上传工作流产物
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rpmm-${{ steps.version.outputs.version }}-x64
           path: temp/release/*

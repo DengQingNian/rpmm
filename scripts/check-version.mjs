@@ -38,9 +38,9 @@ function readJson(file) {
  * 返回：版本号字符串；缺少 [package] 段或 version 字段时抛出错误。
  */
 function cargoVersion(text, file) {
-  // 只取第一个 [package] 段，避免读到后面 [workspace] 等段中的 version。
-  const section = /\[package\]([\s\S]*?)(?:\n\[|$)/.exec(text);
-  const matched = section && /^\s*version\s*=\s*"([^"]+)"/m.exec(section[1]);
+  // 只取第一个 [package] 段，避免读到后面 [workspace] 等段中的 version；行尾兼容 LF 与 CRLF。
+  const section = /\[package\]([\s\S]*?)(?:\r?\n\[|$)/.exec(text);
+  const matched = section && /^[ \t]*version[ \t]*=[ \t]*"([^"]+)"/m.exec(section[1]);
   if (!matched) throw new Error(`${file} 缺少 [package] 段或 version 字段`);
   return matched[1];
 }
@@ -51,8 +51,9 @@ function cargoVersion(text, file) {
  * 返回：版本号字符串；锁文件缺少该包时抛出错误。
  */
 function lockVersion(text, name) {
-  // cargo 固定按 name、version 的顺序输出包记录，按相邻两行匹配即可，无需完整解析 TOML。
-  const pattern = new RegExp(`\\[\\[package\\]\\]\\nname = "${name}"\\nversion = "([^"]+)"`);
+  // cargo 固定按 name、version 的顺序输出包记录，按相邻两行匹配即可，无需完整解析 TOML；
+  // Windows 上检出仓库时锁文件可能是 CRLF，因此行尾写成可选回车加换行。
+  const pattern = new RegExp(`\\[\\[package\\]\\]\\r?\\nname = "${name}"\\r?\\nversion = "([^"]+)"`);
   const matched = pattern.exec(text);
   if (!matched) throw new Error(`Cargo.lock 缺少 ${name}，请先执行 cargo check --workspace 同步锁文件`);
   return matched[1];
