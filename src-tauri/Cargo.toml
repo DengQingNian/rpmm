@@ -1,6 +1,6 @@
 [package]
 name = "rpmm-desktop"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90"
 description = "带托盘、监控和配置界面的 Windows 进程管理器"

@@ -40,7 +40,7 @@ const pages: {
   },
   {
     key: "config",
-    title: "子进程配置",
+    title: "服务配置",
     description: "编辑启动命令、环境、依赖与自动重启策略。",
     icon: "config",
     number: "03",
@@ -132,9 +132,6 @@ async function submitCategory(): Promise<void> {
     <main>
       <header class="page-header">
         <div>
-          <div class="eyebrow">
-            RPMM / 控制台 <span>{{ currentPage.number }}</span>
-          </div>
           <h1>{{ currentPage.title }}<span class="title-stroke"></span></h1>
           <p>{{ currentPage.description }}</p>
         </div>
@@ -181,7 +178,7 @@ async function submitCategory(): Promise<void> {
         /><SettingsPage v-else :desktop="desktop" />
       </div>
       <footer>
-        <span>当前用户会话</span><span>独立托管 / 依赖编排 / 自动重启</span>
+        <span>当前用户会话</span>
       </footer>
     </main>
   </div>

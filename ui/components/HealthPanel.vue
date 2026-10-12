@@ -87,7 +87,7 @@ const enabled = computed(() =>
   >
   <NEmpty
     v-else
-    description="未配置健康检查，可在子进程配置中启用"
+    description="未配置健康检查，可在服务配置中启用"
     class="empty"
   />
   <h3>检查历史 <small>本次运行最近 100 次，包含历史实例，不写日志</small></h3>

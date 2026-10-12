@@ -95,7 +95,6 @@ const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAf
             @click="desktop.state.categoryVisible = true"
             ><template #icon><AppIcon name="category-add" /></template
           ></NButton>
-          <AppIcon name="folder" />
         </div>
       </div>
       <div v-if="desktop.state.statuses.length" class="config-groups">
@@ -184,7 +183,7 @@ const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAf
           </div>
         </section>
       </div>
-      <NEmpty v-else description="暂无子进程配置" class="empty" />
+      <NEmpty v-else description="暂无服务配置" class="empty" />
       <div class="config-guide">
         <strong>导入与导出</strong>
         <NSelect v-model:value="desktop.state.exportUnits" multiple :options="desktop.state.statuses.map(item => ({ label: item.name, value: item.name }))" :disabled="desktop.locked.value" placeholder="多选要导出的服务" />
@@ -246,7 +245,7 @@ const example = `[Unit]\nDescription=应用说明\nRequires=database.service\nAf
             !desktop.state.document
           "
           :autosize="{ minRows: 18, maxRows: 26 }"
-          :input-props="{ spellcheck: false, 'aria-label': '子进程配置正文' }"
+          :input-props="{ spellcheck: false, 'aria-label': '服务配置正文' }"
           placeholder="选择一个子进程以编辑配置"
       /></NSpin>
       <div class="editor-footer">

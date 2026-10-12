@@ -530,7 +530,7 @@ export function useDesktop() {
     }, "服务配置已删除");
   }
 
-  /** 生成子进程配置。参数：draft 为新建表单。返回：无。 */
+  /** 生成服务配置。参数：draft 为新建表单。返回：无。 */
   async function createProcess(draft: ProcessDraft): Promise<void> {
     if (!(await mayDiscard())) return;
     const name = draft.name.endsWith(".service")
@@ -553,7 +553,7 @@ export function useDesktop() {
           throw new Error(`配置已创建，但启用失败：${String(error)}`);
         }
       }
-    }, "子进程配置已创建，可在监控页面启动");
+    }, "服务配置已创建，可在监控页面启动");
   }
 
   /** 将健康表单写入当前文档。参数：无。返回：无；保存时由后端校验合并定义。
