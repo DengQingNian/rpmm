@@ -154,8 +154,8 @@ const running = computed(() =>
               ><template #icon><AppIcon name="autostart" /></template
               >{{
                 desktop.selectedProcess.value.enabled
-                  ? "取消随应用启动"
-                  : "随应用启动"
+                  ? "取消随 rpmm 启动"
+                  : "随 rpmm 启动"
               }}</NButton
             ><NButton
               v-if="desktop.selectedProcess.value.state === 'failed'"
@@ -216,7 +216,7 @@ const running = computed(() =>
                   <dd>{{ desktop.selectedProcess.value.config_version }}</dd>
                 </div>
                 <div>
-                  <dt>随应用启动</dt>
+                  <dt>随 rpmm 启动</dt>
                   <dd>
                     {{
                       desktop.selectedProcess.value.enabled

@@ -311,13 +311,27 @@ fn missing_executable_fails() {
 }
 /// 向监听器发单个请求。参数：root/action 为目录与动作。返回：响应。
 async fn request(root: &Path, action: rpmm::ipc::Action) -> rpmm::ipc::Response {
-    let pipe = ClientOptions::new()
-        .open(rpmm::ipc::pipe_name(root))
-        .unwrap();
+    // 所有管道实例都在使用中说明监听器还没开始接收，退避后重试而不是直接失败。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let pipe = loop {
+        match ClientOptions::new().open(rpmm::ipc::pipe_name(root)) {
+            Ok(pipe) => break pipe,
+            Err(error) if error.raw_os_error() == Some(231) && Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await
+            }
+            Err(error) => panic!("连接管理器失败：{error}"),
+        }
+    };
     let mut reader = BufReader::new(pipe);
-    rpmm::ipc::write_frame(reader.get_mut(), &rpmm::ipc::Request { version: 1, action })
-        .await
-        .unwrap();
+    rpmm::ipc::write_frame(
+        reader.get_mut(),
+        &rpmm::ipc::Request {
+            version: rpmm::ipc::VERSION,
+            action,
+        },
+    )
+    .await
+    .unwrap();
     rpmm::ipc::read_frame(&mut reader).await.unwrap()
 }
 /// 验证真实 IPC 控制闭环、版本诊断和单实例保护。参数：无。返回：无。
@@ -462,6 +476,7 @@ async fn ipc_delete_removes_service_config() {
         rpmm::ipc::Action::Delete {
             unit: "app.service".into(),
             stop: false,
+            expected: None,
         },
     )
     .await;
@@ -475,6 +490,7 @@ async fn ipc_delete_removes_service_config() {
             rpmm::ipc::Action::Delete {
                 unit: "app.service".into(),
                 stop: true,
+                expected: None,
             }
         )
         .await
@@ -619,4 +635,60 @@ async fn manager_crash_cleans_children() {
         assert!(Instant::now() < deadline);
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+/// 验证守护进程探测与客户端调用闭环，停止后不再探测到管理器。参数：无。返回：无。
+#[tokio::test(flavor = "multi_thread")]
+async fn probe_and_call_roundtrip() {
+    use rpmm::ipc::{Action, Presence, call, presence};
+    let root = root("probe");
+    let text = format!(
+        "[Service]\nExecStart=\"{}\" sleep\n[Install]\nWantedBy=multi-user.target\n",
+        fixture().replace('\\', "/")
+    );
+    std::fs::write(root.join("units/app.service"), &text).unwrap();
+    // 没有管理器时探测为 absent，客户端调用给出连接错误而不是挂起。
+    assert_eq!(presence(&root).await, Presence::Absent);
+    assert!(call(&root, Action::List).await.is_err());
+    let manager = Manager::new(&root).unwrap();
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let server = tokio::spawn(rpmm::ipc::serve(manager.clone(), stop_rx, ready_tx));
+    ready_rx.await.unwrap().unwrap();
+    assert_eq!(presence(&root).await, Presence::Available);
+    // 客户端读到与管理器一致的状态。
+    let status = call(
+        &root,
+        Action::Status {
+            unit: Some("app.service".into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(status[0]["name"], "app.service");
+    // 桌面程序需要的配置读写也走同一条通道。
+    // expected 带原文表示「按打开时的内容覆盖」，与界面保存语义一致。
+    call(
+        &root,
+        Action::SaveDocument {
+            name: "app.service".into(),
+            text: text.clone(),
+            expected: Some(text.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    let documents = call(
+        &root,
+        Action::Documents {
+            unit: "app.service".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(documents[0]["text"], text);
+    // 关闭后监听器立刻释放，探测不再认为存在管理器。
+    let _ = stop_tx.send(true);
+    server.await.unwrap().unwrap();
+    assert_eq!(presence(&root).await, Presence::Absent);
 }

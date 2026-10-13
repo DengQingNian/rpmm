@@ -1,9 +1,35 @@
 <script setup lang="ts">
-import { NButton, NInput, NSelect, NSwitch } from "naive-ui";
+import { NButton, NInput, NSelect, NSwitch, NTag } from "naive-ui";
 import { computed } from "vue";
 import type { useDesktop } from "../composables/useDesktop";
 import AppIcon from "./AppIcon.vue";
 const props = defineProps<{ desktop: ReturnType<typeof useDesktop> }>();
+/** 开机自启开关：读后端真实注册状态，写入需要管理员授权。 */
+const boot = computed({
+  get: () => props.desktop.state.settings?.boot.installed ?? false,
+  set: (value: boolean) => {
+    void props.desktop.toggleBoot(value);
+  },
+});
+/** 开机自启运行状态的中文说明。 */
+const bootState = computed(() => {
+  const registration = props.desktop.state.settings?.boot;
+  if (!registration?.installed) return "未注册";
+  return (
+    {
+      running: "运行中",
+      stopped: "已停止",
+      "start-pending": "启动中",
+      "stop-pending": "停止中",
+      paused: "已暂停",
+    }[registration.state] ?? registration.state
+  );
+});
+/** 开机自启账户说明，空账户表示系统账户。 */
+const bootAccount = computed(() => {
+  const account = props.desktop.state.settings?.boot.account;
+  return account ? account : "LocalSystem";
+});
 const refreshOptions = computed(() =>
   [
     ...new Set([
@@ -31,13 +57,52 @@ const refreshOptions = computed(() =>
       <form @submit.prevent="desktop.saveSettings">
         <label class="setting-row"
           ><div>
-            <strong>开机启动</strong>
-            <p>当前用户登录 Windows 后自动启动 rpmm，并隐藏到托盘。</p>
+            <strong
+              >开机自启（无需登录）
+              <NTag
+                :type="
+                  desktop.state.settings?.boot.installed ? 'success' : 'default'
+                "
+                size="small"
+                >{{ bootState }}</NTag
+              ></strong
+            >
+            <p>
+              注册为 Windows 服务并由系统在启动时拉起，不需要任何用户登录；已启用的服务随守护进程一起启动。
+              注册与取消需要管理员授权，被托管的子进程以 {{ bootAccount }}
+              账户运行在会话 0，不再继承登录用户的桌面环境。
+            </p>
+            <p v-if="desktop.state.settings?.daemon" class="setting-hint">
+              当前控制台连接的是该守护进程；退出控制台不会停止它。
+            </p>
+            <p
+              v-else-if="desktop.state.settings?.boot.installed"
+              class="setting-hint"
+            >
+              当前控制台仍在本机托管同一数据目录，守护进程将在下次系统启动时接管；立即移交请先退出控制台，再执行
+              rpmm autostart start。
+            </p>
+          </div>
+          <NSwitch
+            v-model:value="boot"
+            :disabled="
+              desktop.locked.value ||
+              desktop.state.busy ||
+              !desktop.state.settings
+            "
+            aria-label="开机自启"
+        /></label>
+        <label class="setting-row"
+          ><div>
+            <strong>登录后打开控制台</strong>
+            <p>
+              当前用户登录 Windows 后自动启动控制台并隐藏到托盘，只影响登录会话，与开机自启相互独立。
+            </p>
           </div>
           <NSwitch
             v-model:value="desktop.state.settingsDraft.autostart"
             :disabled="desktop.locked.value || !desktop.state.settings"
-            aria-label="开机启动"
+            aria-label="登录后打开控制台"
         /></label>
         <label class="setting-row"
           ><div>
@@ -91,7 +156,11 @@ const refreshOptions = computed(() =>
       </div>
       <div class="setting-block">
         <strong>托盘行为</strong>
-        <p>
+        <p v-if="desktop.state.settings?.daemon">
+          关闭或最小化窗口会收起到托盘。当前由开机自启的守护进程托管子进程，退出控制台只关闭窗口，服务继续运行；停止服务请用
+          rpmm autostart stop 或以管理员身份在服务管理器中停止。
+        </p>
+        <p v-else>
           关闭或最小化窗口会收起到托盘，子进程持续运行。退出时按依赖顺序停止所有托管进程，清理残留进程树。
         </p>
         <NButton
@@ -99,7 +168,11 @@ const refreshOptions = computed(() =>
           :disabled="desktop.locked.value"
           @click="desktop.quit"
           ><template #icon><AppIcon name="quit" /></template
-          >退出并停止所有子进程</NButton
+          >{{
+            desktop.state.settings?.daemon
+              ? "退出控制台"
+              : "退出并停止所有子进程"
+          }}</NButton
         >
       </div>
     </section>

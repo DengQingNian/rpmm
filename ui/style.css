@@ -713,6 +713,9 @@ pre {
   color: #79746b;
   margin: 7px 0 0;
 }
+.setting-row p.setting-hint {
+  color: #8a5a2b;
+}
 .setting-row .n-select {
   flex-shrink: 0;
   width: 95px;

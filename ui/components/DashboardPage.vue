@@ -24,7 +24,7 @@ const cards = computed(() => [
     icon: "attention" as const,
   },
   {
-    title: "随应用启动",
+    title: "随 rpmm 启动",
     value: props.desktop.counts.value.enabled,
     icon: "autostart" as const,
   },

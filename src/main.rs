@@ -25,6 +25,11 @@ enum Command {
         #[command(subcommand)]
         command: ManagerCommand,
     },
+    /// 开机自启：注册为系统启动时运行的 Windows 服务，不需要用户登录
+    Autostart {
+        #[command(subcommand)]
+        command: AutostartCommand,
+    },
     Verify,
     List,
     Start {
@@ -69,6 +74,27 @@ enum ManagerCommand {
     Run,
     Stop,
 }
+#[derive(Subcommand)]
+enum AutostartCommand {
+    /// 注册开机自启服务；重复执行会按当前程序与数据目录更新登记
+    Install {
+        #[arg(long, help = "服务账户，默认 LocalSystem")]
+        account: Option<String>,
+        #[arg(long, help = "服务账户密码，配合 --account 使用")]
+        password: Option<String>,
+    },
+    /// 停止并删除开机自启登记
+    Uninstall,
+    /// 启动已注册的开机自启服务
+    Start,
+    /// 停止正在运行的开机自启服务
+    Stop,
+    /// 查询开机自启的注册与运行状态
+    Status,
+    /// 服务控制管理器调用的入口，注册时自动写入服务命令行
+    #[command(hide = true)]
+    Run,
+}
 #[derive(Clone, ValueEnum)]
 enum Source {
     Stdout,
@@ -92,11 +118,13 @@ fn run(cli: Cli) -> Result<()> {
     let root = cli.root.unwrap_or_else(rpmm::desktop::default_root);
     // 数据目录同样接受 C:/、C:\、/c/ 等写法；相对路径仍按当前目录解析。
     let root = std::path::absolute(rpmm::paths::normalize_path(&root))?;
-    // 控制命令不得隐式创建数据目录；只有前台管理器可以创建。
+    // 控制命令不得隐式创建数据目录；只有前台管理器和守护进程可以创建。
     if matches!(
         &cli.command,
         Command::Manager {
             command: ManagerCommand::Run
+        } | Command::Autostart {
+            command: AutostartCommand::Run
         }
     ) {
         std::fs::create_dir_all(&root)?;
@@ -120,6 +148,7 @@ fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Command::Manager { command } => manager_command(&root, command),
+        Command::Autostart { command } => autostart_command(&root, command, cli.json),
         command => {
             let action = match command {
                 Command::List => Action::List,
@@ -131,7 +160,11 @@ fn run(cli: Cli) -> Result<()> {
                 Command::Disable { unit } => Action::Disable { unit },
                 Command::DaemonReload => Action::DaemonReload,
                 Command::ResetFailed { unit } => Action::ResetFailed { unit },
-                Command::Delete { unit, stop } => Action::Delete { unit, stop },
+                Command::Delete { unit, stop } => Action::Delete {
+                    unit,
+                    stop,
+                    expected: None,
+                },
                 Command::Logs {
                     unit,
                     follow,
@@ -156,6 +189,102 @@ fn run(cli: Cli) -> Result<()> {
             tokio::runtime::Runtime::new()?.block_on(ipc::client(&root, action, cli.json))
         }
     }
+}
+/// 执行开机自启服务的注册与控制。参数：root 为数据目录，command 为动作，json 为显示模式。返回：结果。
+fn autostart_command(root: &std::path::Path, command: AutostartCommand, json: bool) -> Result<()> {
+    match command {
+        AutostartCommand::Install { account, password } => {
+            // 服务命令行固定指向当前程序，重复注册时按新路径与新数据目录更新。
+            let options = rpmm::service::InstallOptions {
+                executable: std::env::current_exe()?,
+                arguments: rpmm::service::ENTRY
+                    .iter()
+                    .map(|item| item.to_string())
+                    .collect(),
+                root: root.to_path_buf(),
+                account,
+                password,
+            };
+            rpmm::service::install(&options)?;
+            // 用户配置目录会随账户变化或删除而失效，注册时提醒改用机器级目录。
+            if let Some(warning) = rpmm::service::profile_warning(root) {
+                eprintln!("警告：{warning}");
+            }
+            println!(
+                "已注册开机自启（{}）：系统启动时自动运行，不需要任何用户登录",
+                rpmm::service::NAME
+            );
+            println!("数据目录：{}", root.display());
+            println!("已启用的服务随守护进程启动，用 rpmm autostart status 查看状态");
+            Ok(())
+        }
+        AutostartCommand::Uninstall => {
+            rpmm::service::uninstall()?;
+            println!("已删除开机自启登记，系统启动时不再自动运行");
+            Ok(())
+        }
+        AutostartCommand::Start => {
+            rpmm::service::start()?;
+            println!("已请求启动守护进程");
+            Ok(())
+        }
+        AutostartCommand::Stop => {
+            rpmm::service::stop()?;
+            println!("已请求停止守护进程，正在按依赖逆序回收子进程");
+            Ok(())
+        }
+        AutostartCommand::Status => {
+            let registration = rpmm::service::registration()?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&registration)?);
+            } else {
+                print_registration(&registration);
+            }
+            Ok(())
+        }
+        // 服务控制管理器启动本进程时进入这里，直到收到停止或关机控制码才返回。
+        AutostartCommand::Run => rpmm::service::run(root),
+    }
+}
+/// 打印开机自启状态。参数：registration 为查询结果。返回：无。
+fn print_registration(registration: &rpmm::service::Registration) {
+    if !registration.installed {
+        println!("开机自启：未注册");
+        println!("提示：以管理员身份运行 rpmm autostart install，注册后由系统在启动时拉起守护进程");
+        return;
+    }
+    let state = match registration.state.as_str() {
+        "running" => "运行中",
+        "stopped" => "已停止",
+        "start-pending" => "启动中",
+        "stop-pending" => "停止中",
+        "paused" => "已暂停",
+        other => other,
+    };
+    let start_type = match registration.start_type.as_str() {
+        "auto" => "自动",
+        "demand" => "手动",
+        "disabled" => "已禁用",
+        other => other,
+    };
+    let account = if registration.account.is_empty() {
+        "LocalSystem"
+    } else {
+        registration.account.as_str()
+    };
+    let pid = registration
+        .pid
+        .map(|value| format!("（PID {value}）"))
+        .unwrap_or_default();
+    println!("开机自启：已注册（{}）", rpmm::service::NAME);
+    println!("状态：{state}{pid}");
+    println!("启动类型：{start_type}");
+    println!("账户：{account}");
+    println!("程序：{}", registration.executable);
+    println!(
+        "数据目录：{}",
+        registration.root.as_deref().unwrap_or("（未指定）")
+    );
 }
 /// 执行不依赖系统服务的前台管理器。参数：root/command 为目录和动作。返回：结果。
 fn manager_command(root: &std::path::Path, command: ManagerCommand) -> Result<()> {

@@ -21,12 +21,30 @@ export interface Preferences {
   start_hidden: boolean;
   refresh_ms: number;
 }
+/** 开机自启服务的注册与运行状态。 */
+export interface BootRegistration {
+  installed: boolean;
+  display_name: string;
+  state: string;
+  start_type: string;
+  account: string;
+  executable: string;
+  root: string | null;
+  pid: number | null;
+}
 /** 桌面设置及数据根目录。 */
 export interface Settings {
   root: string;
   next_root: string;
   preferences: Preferences;
+  /** 登录自启动：当前用户登录后打开控制台。 */
   autostart: boolean;
+  /** 开机自启：系统启动时运行的守护进程，不需要登录。 */
+  boot: BootRegistration;
+  /** 当前进程是否已提升为管理员。 */
+  elevated: boolean;
+  /** 是否由开机自启的守护进程托管。 */
+  daemon: boolean;
 }
 /** 按来源分类的日志记录。 */
 export interface LogRecord {

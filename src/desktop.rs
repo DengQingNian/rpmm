@@ -39,14 +39,14 @@ pub struct Document {
 }
 
 /// 可移植的配置包；按服务保留原文、覆盖顺序与启用状态。
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigBundle {
     pub format: String,
     pub version: u32,
     pub services: Vec<ServiceBundle>,
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceBundle {
     pub name: String,

@@ -12,6 +12,7 @@ pub mod platform;
 pub mod policy;
 #[cfg(windows)]
 pub mod security;
+pub mod service;
 
 /// 项目统一错误，便于 CLI 和 IPC 返回稳定的错误类别。
 #[derive(Debug, thiserror::Error)]

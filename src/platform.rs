@@ -102,6 +102,24 @@ pub mod win {
             }
         }
     }
+    /// 弹出系统消息框。参数：title 为标题，text 为正文。返回：无。
+    /// 无控制台的图形程序用它报告无法通过界面呈现的致命错误，因此不依赖日志文件。
+    pub fn message_box(title: &str, text: &str) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MessageBoxW,
+        };
+        let title = wide(title);
+        let text = wide(text);
+        unsafe {
+            MessageBoxW(
+                None,
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND,
+            );
+        }
+    }
+
     /// 编码 NUL 结尾 UTF-16。参数：text 为字符串。返回：UTF-16 缓冲。
     pub fn wide(text: &str) -> Vec<u16> {
         text.encode_utf16().chain(Some(0)).collect()

@@ -37,9 +37,9 @@
 | Socket、Timer、其他自定义 target | 暂不支持 | 后续独立扩展；首版仅普通 .service |
 | Linux 沙箱和网络隔离 | 暂不支持 | Job 资源额度不提供网络隔离或 Linux 安全边界 |
 | journald/Event Log | Windows 替代 | JSONL 文件、GUI 和 CLI；不接 Event Log |
-| GUI 和交互桌面 | 已支持 | Tauri 2 监控、配置编辑；子进程处于当前用户会话 |
-| Windows 服务 | 已移除 | 桌面进程直接监督；不注册服务或授予服务登录权限 |
-| 开机启动 | 当前用户登录启动 | 当前用户 Run 登记；隐藏到托盘后激活 enabled 集合 |
-| 最小化、窗口关闭 | 常驻托盘 | 仅明确退出时有序停止子进程；托盘点击恢复窗口 |
+| GUI 和交互桌面 | 已支持 | Tauri 2 监控、配置编辑；自行托管时子进程处于当前用户会话 |
+| Windows 服务 | 可选 | 注册为自动启动服务后由 SCM 在开机时拉起，不需要登录；默认 LocalSystem、会话 0，需要管理员权限 |
+| 开机启动 | 两套独立机制 | 开机自启服务可在无人登录时运行；当前用户 Run 登记只打开控制台；两者分别设置，启动后都激活 enabled 集合 |
+| 最小化、窗口关闭 | 常驻托盘 | 自行托管时明确退出才有序停止子进程；连接守护进程时退出只关闭控制台 |
 
-Windows 机制参考：[Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[命名管道访问控制](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)、[Tauri 托盘](https://v2.tauri.app/learn/system-tray/)、[Run 启动登记](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys)。
+Windows 机制参考：[Job Object](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[命名管道访问控制](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)、[Tauri 托盘](https://v2.tauri.app/learn/system-tray/)、[Run 启动登记](https://learn.microsoft.com/en-us/windows/win32/setupapi/run-and-runonce-registry-keys)、[服务控制管理器](https://learn.microsoft.com/en-us/windows/win32/services/service-control-manager)、[服务失败恢复](https://learn.microsoft.com/en-us/windows/win32/api/winsvc/ns-winsvc-service_failure_actionsw)。

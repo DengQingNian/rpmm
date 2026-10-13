@@ -1,16 +1,21 @@
 //! 有版本的本机命名管道协议；每个连接一个请求。
-use crate::{Error, Result, logging::Record, manager::Manager};
+use crate::{Error, Result, logging::Record, manager::Manager, metrics::Collector};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     sync::{oneshot, watch},
 };
 
-pub const VERSION: u32 = 1;
-pub const MAX_FRAME: u64 = 1024 * 1024;
+pub const VERSION: u32 = 2;
+/// 单个请求或响应的上限；配置包最大 16 MiB，帧上限为其两倍。
+pub const MAX_FRAME: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
@@ -43,12 +48,52 @@ pub enum Action {
         unit: String,
         #[serde(default)]
         stop: bool,
+        /// 编辑时的主配置原文，用于拒绝覆盖他人修改。
+        #[serde(default)]
+        expected: Option<String>,
     },
     Logs {
         unit: String,
         source: Option<String>,
         lines: usize,
         follow: bool,
+    },
+    /// 读取可编辑的配置文档。
+    Documents {
+        unit: String,
+    },
+    /// 校验并保存配置文档，expected 为编辑时的原文。
+    SaveDocument {
+        name: String,
+        text: String,
+        expected: Option<String>,
+    },
+    /// 读取界面分类。
+    Categories,
+    /// 保存界面分类。
+    SaveCategories {
+        categories: crate::desktop::Categories,
+    },
+    /// 导出选中服务的配置包。
+    ExportBundle {
+        units: Vec<String>,
+    },
+    /// 导入整包配置。
+    ImportBundle {
+        bundle: crate::desktop::ConfigBundle,
+        overwrite: bool,
+    },
+    /// 查询全部健康检查快照。
+    HealthStatus,
+    /// 查询单个服务的健康检查历史。
+    HealthHistory {
+        unit: String,
+    },
+    /// 采集宿主机与托管进程资源。
+    Metrics {
+        unit: Option<String>,
+        #[serde(default)]
+        details: bool,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,8 +174,66 @@ pub async fn write_frame(
     Ok(())
 }
 
-/// 执行非日志请求。参数：manager/action 为管理器和动作。返回：响应数据。
-async fn execute(manager: &Arc<Manager>, action: Action) -> Result<Value> {
+/// 校验日志来源参数。参数：source 为可选来源。返回：校验结果。
+fn validate_source(source: Option<&str>) -> Result<()> {
+    if source.is_some_and(|value| !matches!(value, "stdout" | "stderr" | "manager" | "health")) {
+        return Err(Error::Operation(
+            "日志来源只能是 stdout/stderr/manager/health".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// 采集宿主机与托管进程资源。参数：manager/metrics 为管理器和采集器，unit 为可选服务，details 表示是否读取环境与连接明细。返回：资源快照。
+/// 采集后再次核对实例编号，退出或重启期间不会把旧进程资源显示成新实例。
+/// 采样会枚举全机进程，进程内调用方应放在阻塞线程上执行。
+pub fn sample_metrics(
+    manager: &Arc<Manager>,
+    metrics: &Mutex<Collector>,
+    unit: Option<&str>,
+    details: bool,
+) -> Result<Value> {
+    let selected = match unit {
+        Some(name) => {
+            let status = manager.status(Some(name))?.remove(0);
+            let definition = manager.unit_snapshot(name)?;
+            Some((status, definition))
+        }
+        None => None,
+    };
+    let pid = selected.as_ref().and_then(|(status, _)| status.pid);
+    let (host, mut process) = metrics.lock().unwrap().sample(pid);
+    if details && let Some(resources) = process.as_mut() {
+        if resources.environment.is_empty()
+            && let Some((_, definition)) = &selected
+        {
+            resources.environment = crate::platform::environment(definition);
+            resources.environment_source = "启动配置与继承环境快照（进程内部修改不在此列）".into();
+        }
+        match crate::metrics::connections(resources.pid) {
+            Ok(connections) => resources.connections = connections,
+            Err(error) => resources.connection_error = Some(error.to_string()),
+        }
+    }
+    if let Some((status, _)) = &selected
+        && !manager
+            .status(Some(&status.name))
+            .is_ok_and(|value| value[0].pid == status.pid && value[0].instance == status.instance)
+    {
+        process = None;
+    }
+    Ok(
+        serde_json::json!({ "host": host, "process": process, "instance": selected.map(|(status, _)| status.instance) }),
+    )
+}
+
+/// 执行一次请求。参数：manager 为管理器，metrics 为资源采集器，action 为动作。返回：响应数据。
+/// 需要流式追加的日志跟随请求由连接处理器单独处理，其余请求都在这里完成。
+pub async fn execute(
+    manager: &Arc<Manager>,
+    metrics: &Mutex<Collector>,
+    action: Action,
+) -> Result<Value> {
     match action {
         Action::List | Action::Status { unit: None } => {
             Ok(serde_json::to_value(manager.status(None)?)?)
@@ -163,20 +266,80 @@ async fn execute(manager: &Arc<Manager>, action: Action) -> Result<Value> {
             manager.reset_failed(&unit).await?;
             Ok(Value::Null)
         }
-        Action::Delete { unit, stop } => {
-            manager.delete_service(&unit, stop, None).await?;
+        Action::Delete {
+            unit,
+            stop,
+            expected,
+        } => {
+            manager
+                .delete_service(&unit, stop, expected.as_deref())
+                .await?;
             Ok(Value::Null)
         }
-        Action::Logs { .. } | Action::Shutdown => {
+        Action::Logs {
+            unit,
+            source,
+            lines,
+            follow: false,
+        } => {
+            crate::config::validate_name(&unit)?;
+            manager.status(Some(&unit))?;
+            validate_source(source.as_deref())?;
+            Ok(serde_json::to_value(manager.logger.tail(
+                &unit,
+                source.as_deref(),
+                lines,
+            )?)?)
+        }
+        Action::Documents { unit } => Ok(serde_json::to_value(crate::desktop::documents(
+            &manager.root,
+            &unit,
+        )?)?),
+        Action::SaveDocument {
+            name,
+            text,
+            expected,
+        } => Ok(serde_json::to_value(
+            manager
+                .save_document(&name, &text, expected.as_deref())
+                .await?,
+        )?),
+        Action::Categories => Ok(serde_json::to_value(crate::desktop::load_categories(
+            &manager.root,
+        )?)?),
+        Action::SaveCategories { categories } => {
+            crate::desktop::save_categories(&manager.root, &categories)?;
+            Ok(Value::Null)
+        }
+        Action::ExportBundle { units } => {
+            let statuses = units
+                .iter()
+                .map(|name| manager.status(Some(name)).map(|mut value| value.remove(0)))
+                .collect::<Result<Vec<_>>>()?;
+            Ok(serde_json::to_value(crate::desktop::export_bundle(
+                &manager.root,
+                &statuses,
+            )?)?)
+        }
+        Action::ImportBundle { bundle, overwrite } => Ok(serde_json::to_value(
+            manager.import_bundle(bundle, overwrite).await?,
+        )?),
+        Action::HealthStatus => Ok(serde_json::to_value(manager.health_status()?)?),
+        Action::HealthHistory { unit } => Ok(serde_json::to_value(manager.health_history(&unit)?)?),
+        Action::Metrics { unit, details } => {
+            sample_metrics(manager, metrics, unit.as_deref(), details)
+        }
+        Action::Logs { follow: true, .. } | Action::Shutdown => {
             Err(Error::Operation("此请求应由连接处理器协调".into()))
         }
     }
 }
 
-/// 处理连接。参数：stream、manager、stop 为管道、管理器和关闭通知。返回：结果。
+/// 处理连接。参数：stream、manager、metrics、stop、shutdown 为管道、管理器、资源采集器和关闭通知。返回：结果。
 async fn connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
     stream: S,
     manager: Arc<Manager>,
+    metrics: Arc<Mutex<Collector>>,
     mut stop: watch::Receiver<bool>,
     shutdown: watch::Sender<bool>,
 ) -> Result<()> {
@@ -210,24 +373,22 @@ async fn connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         let _ = shutdown.send(true);
         return Ok(());
     }
-    if let Action::Logs {
-        unit,
-        source,
-        lines,
-        follow,
-    } = request.action
-    {
+    // 只有显式要求跟随的日志请求走流式通道，其余请求统一由 execute 返回完整数据。
+    let streaming = matches!(&request.action, Action::Logs { follow: true, .. });
+    if streaming {
+        let Action::Logs {
+            unit,
+            source,
+            lines,
+            ..
+        } = request.action
+        else {
+            return Err(Error::Operation("日志请求解析失败".into()));
+        };
         let snapshot = (|| {
             crate::config::validate_name(&unit)?;
             manager.status(Some(&unit))?;
-            if source
-                .as_deref()
-                .is_some_and(|s| !matches!(s, "stdout" | "stderr" | "manager" | "health"))
-            {
-                return Err(Error::Operation(
-                    "日志来源只能是 stdout/stderr/manager/health".into(),
-                ));
-            }
+            validate_source(source.as_deref())?;
             manager
                 .logger
                 .tail_and_subscribe(&unit, source.as_deref(), lines)
@@ -238,10 +399,6 @@ async fn connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         };
         for record in records {
             write_frame(stream.get_mut(), &Response::success(record)?).await?;
-        }
-        if !follow {
-            write_frame(stream.get_mut(), &Response::success(Value::Null)?).await?;
-            return Ok(());
         }
         loop {
             tokio::select! {
@@ -256,7 +413,7 @@ async fn connection<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         }
         Ok(())
     } else {
-        let response = match execute(&manager, request.action).await {
+        let response = match execute(&manager, &metrics, request.action).await {
             Ok(data) => Response::success(data)?,
             Err(e) => Response::failure(&e),
         };
@@ -272,6 +429,9 @@ pub async fn serve(
     ready: oneshot::Sender<Result<()>>,
 ) -> Result<()> {
     let name = pipe_name(&manager.root);
+    // 资源采集器由服务端持有，客户端只取快照；被托管的进程始终由本进程采样。
+    // 首次枚举全机进程较慢，必须在管道出现之前完成，否则客户端会在就绪信号之后撞上尚未开始接收的管道实例。
+    let metrics = Arc::new(Mutex::new(Collector::default()));
     let mut server = match crate::security::pipe(&name, true) {
         Ok(server) => server,
         Err(e) => {
@@ -300,10 +460,10 @@ pub async fn serve(
                 let next = match crate::security::pipe(&name, false) { Ok(pipe) => pipe, Err(e) => break Err(e) };
                 let connected = std::mem::replace(&mut server, next);
                 let manager = manager.clone(); let stop = stop.clone();
-                let shutdown = shutdown.clone();
+                let shutdown = shutdown.clone(); let metrics = metrics.clone();
                 // 活跃连接数量有上限，避免授权客户端无限消耗内存。
                 if connections.len() >= 64 { drop(connected); continue; }
-                connections.spawn(async move { if let Err(e) = connection(connected, manager.clone(), stop, shutdown).await { let _ = manager.logger.write("manager", 0, "manager", &format!("IPC 连接结束：{e}")); } });
+                connections.spawn(async move { if let Err(e) = connection(connected, manager.clone(), metrics, stop, shutdown).await { let _ = manager.logger.write("manager", 0, "manager", &format!("IPC 连接结束：{e}")); } });
             }
             _ = stop.changed() => break Ok(()),
             _ = requested_stop.changed() => break Ok(()),
@@ -317,21 +477,48 @@ pub async fn serve(
     accept_result
 }
 
+/// 打印一条日志记录。参数：record 为记录，json 表示输出原始 JSON。返回：结果。
+fn print_record(record: &Record, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string(record)?);
+        return Ok(());
+    }
+    print!("{} [{}] {}", record.time, record.source, record.text);
+    if !record.text.ends_with('\n') {
+        println!();
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+/// 连接数据目录上的管理器管道。参数：root 为数据目录，wait 为忙等重试上限。返回：已连接的管道。
+async fn connect(
+    root: &Path,
+    wait: Duration,
+) -> std::io::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    let name = pipe_name(root);
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        // ERROR_PIPE_BUSY 表示命名管道实例正在被占用，短暂退避后重试。
+        match ClientOptions::new().open(&name) {
+            Ok(pipe) => return Ok(pipe),
+            Err(error)
+                if error.raw_os_error() == Some(231) && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 #[cfg(windows)]
 /// 向运行中的管理器发送动作并输出结果。参数：root/action/json 为目录、动作和显示模式。返回：结果。
 pub async fn client(root: &Path, action: Action, json: bool) -> Result<()> {
-    use tokio::net::windows::named_pipe::ClientOptions;
-    let name = pipe_name(root);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    let pipe = loop {
-        match ClientOptions::new().open(&name) {
-            Ok(pipe) => break pipe,
-            Err(e) if e.raw_os_error() == Some(231) && tokio::time::Instant::now() < deadline => {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await
-            }
-            Err(e) => return Err(e.into()),
-        }
-    };
+    let pipe = connect(root, Duration::from_secs(5))
+        .await
+        .map_err(access_hint)?;
     let log_mode = matches!(action, Action::Logs { .. });
     let mut stream = BufReader::new(pipe);
     write_frame(
@@ -344,27 +531,20 @@ pub async fn client(root: &Path, action: Action, json: bool) -> Result<()> {
     .await?;
     loop {
         let response: Response = read_frame(&mut stream).await?;
-        if response.version != VERSION {
-            return Err(Error::Operation("响应协议版本不兼容".into()));
-        }
-        if !response.ok {
-            return Err(Error::Operation(format!(
-                "{}: {}",
-                response.code, response.data
-            )));
-        }
+        check(&response)?;
         if log_mode {
             if response.data.is_null() {
                 break;
             }
-            if json {
-                println!("{}", serde_json::to_string(&response.data)?);
-            } else {
-                let record: Record = serde_json::from_value(response.data)?;
-                print!("{} [{}] {}", record.time, record.source, record.text);
-                if !record.text.ends_with('\n') {
-                    println!();
+            // 非跟随请求一次性返回记录数组，跟随请求逐条返回。
+            match serde_json::from_value::<Vec<Record>>(response.data.clone()) {
+                Ok(records) => {
+                    for record in records {
+                        print_record(&record, json)?;
+                    }
+                    break;
                 }
+                Err(_) => print_record(&serde_json::from_value(response.data)?, json)?,
             }
         } else {
             if !response.data.is_null() {
@@ -399,8 +579,90 @@ pub async fn client(root: &Path, action: Action, json: bool) -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+/// 在运行中的管理器上执行动作并读取唯一响应。参数：root 为数据目录，action 为动作。返回：响应数据。
+/// 供桌面程序以客户端方式访问守护进程；日志跟随请求不适用。
+pub async fn call(root: &Path, action: Action) -> Result<Value> {
+    let pipe = connect(root, Duration::from_secs(5))
+        .await
+        .map_err(access_hint)?;
+    let mut stream = BufReader::new(pipe);
+    write_frame(
+        stream.get_mut(),
+        &Request {
+            version: VERSION,
+            action,
+        },
+    )
+    .await?;
+    let response: Response = read_frame(&mut stream).await?;
+    check(&response)?;
+    Ok(response.data)
+}
+
+/// 数据目录上管理器的探测结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// 没有管理器监听，可以自行托管。
+    Absent,
+    /// 已有管理器且当前账户可以连接。
+    Available,
+    /// 已有管理器但当前账户无权连接：守护进程通常以系统账户运行，控制台需要提升权限。
+    Denied,
+}
+
+#[cfg(windows)]
+/// 探测数据目录上的管理器。参数：root 为数据目录。返回：探测结果。
+/// 只看管道能否连接：协议版本是否兼容由后续请求报告，避免把旧版本误判成没有管理器。
+pub async fn presence(root: &Path) -> Presence {
+    match connect(root, Duration::from_secs(2)).await {
+        Ok(_) => Presence::Available,
+        // ERROR_ACCESS_DENIED 说明管理器存在但当前账户不在管道访问控制列表内。
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Presence::Denied,
+        Err(_) => Presence::Absent,
+    }
+}
+
+#[cfg(windows)]
+/// 把连接失败翻译成可操作的诊断。参数：error 为连接错误。返回：统一错误。
+/// 守护进程以系统账户运行时，普通权限的控制台会被命名管道访问控制拒绝，这里给出提示而不是裸的拒绝访问。
+fn access_hint(error: std::io::Error) -> Error {
+    if error.kind() == std::io::ErrorKind::PermissionDenied {
+        Error::Operation("拒绝访问：守护进程以服务账户运行，请以管理员身份运行控制台或命令".into())
+    } else {
+        Error::from(error)
+    }
+}
+
+#[cfg(windows)]
+/// 校验响应版本与结果。参数：response 为响应。返回：结果。
+fn check(response: &Response) -> Result<()> {
+    if response.version != VERSION {
+        return Err(Error::Operation("响应协议版本不兼容".into()));
+    }
+    if !response.ok {
+        return Err(Error::Operation(format!(
+            "{}: {}",
+            response.code, response.data
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(not(windows))]
 /// 非 Windows 不提供命名管道客户端。参数：目录、动作及显示格式。返回：不支持错误。
 pub async fn client(_: &Path, _: Action, _: bool) -> Result<()> {
     Err(Error::Operation("CLI 托管控制仅支持 Windows".into()))
+}
+
+#[cfg(not(windows))]
+/// 非 Windows 不提供命名管道客户端。参数：目录与动作。返回：不支持错误。
+pub async fn call(_: &Path, _: Action) -> Result<Value> {
+    Err(Error::Operation("托管控制仅支持 Windows".into()))
+}
+
+#[cfg(not(windows))]
+/// 非 Windows 没有命名管道。参数：目录。返回：始终认为没有管理器。
+pub async fn presence(_: &Path) -> Presence {
+    Presence::Absent
 }

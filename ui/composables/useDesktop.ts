@@ -847,6 +847,16 @@ export function useDesktop() {
     }, "应用设置已保存");
   }
 
+  /** 注册或删除开机自启服务。参数：enabled 为开关。返回：无。 */
+  async function toggleBoot(enabled: boolean): Promise<void> {
+    await mutate(async () => {
+      const notice = await call<string | null>("set_boot_autostart", { enabled });
+      state.settings = await call<Settings>("settings");
+      // 本机控制台仍在托管同一数据目录时，守护进程要等控制台退出或下次开机才接管。
+      if (notice) message.warning(notice, { duration: 10000 });
+    }, enabled ? "已注册开机自启" : "已取消开机自启");
+  }
+
   /** 隐藏到托盘。参数：无。返回：无。 */
   async function hide(): Promise<void> {
     try {
@@ -952,6 +962,7 @@ export function useDesktop() {
     createProcess,
     createDropin,
     saveSettings,
+    toggleBoot,
     hide,
     quit,
   };

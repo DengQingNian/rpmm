@@ -619,3 +619,208 @@ async fn delete_service_disk_failure_rolls_back() {
     );
     assert_eq!(manager.status(None).unwrap().len(), 1);
 }
+
+/// 验证桌面客户端使用的协议动作与本地执行器一致。参数：无。返回：无。
+#[tokio::test]
+async fn ipc_desktop_actions_cover_client_needs() {
+    use rpmm::{ipc, metrics::Collector};
+    use std::sync::Mutex;
+    let source = root();
+    let manager = Manager::new(&source).unwrap();
+    let metrics = Mutex::new(Collector::default());
+
+    // 配置读写：客户端保存后能按同一路径读回。
+    ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::SaveDocument {
+            name: "app.service".into(),
+            text: BASE.into(),
+            expected: None,
+        },
+    )
+    .await
+    .unwrap();
+    let documents = ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::Documents {
+            unit: "app.service".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(documents[0]["text"], BASE);
+    // 编辑冲突保护同样经由协议生效。
+    assert!(
+        ipc::execute(
+            &manager,
+            &metrics,
+            ipc::Action::SaveDocument {
+                name: "app.service".into(),
+                text: BASE.into(),
+                expected: Some("旧正文".into()),
+            },
+        )
+        .await
+        .is_err()
+    );
+
+    // 分类默认只有默认分类，保存后可读回。
+    let categories = ipc::execute(&manager, &metrics, ipc::Action::Categories)
+        .await
+        .unwrap();
+    assert_eq!(categories["names"][0], desktop::DEFAULT_CATEGORY);
+    ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::SaveCategories {
+            categories: desktop::Categories {
+                names: vec![desktop::DEFAULT_CATEGORY.into(), "Web".into()],
+                assignments: BTreeMap::new(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let categories = ipc::execute(&manager, &metrics, ipc::Action::Categories)
+        .await
+        .unwrap();
+    assert_eq!(categories["names"][1], "Web");
+
+    // 启用、导出与导入：客户端导入的配置包来自协议返回的数据。
+    ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::Enable {
+            unit: "app.service".into(),
+        },
+    )
+    .await
+    .unwrap();
+    let bundle = ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::ExportBundle {
+            units: vec!["app.service".into()],
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(bundle["services"][0]["enabled"], true);
+    let target = root();
+    let restored = Manager::new(&target).unwrap();
+    let restored_metrics = Mutex::new(Collector::default());
+    ipc::execute(
+        &restored,
+        &restored_metrics,
+        ipc::Action::ImportBundle {
+            bundle: serde_json::from_value(bundle).unwrap(),
+            overwrite: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(restored.status(Some("app.service")).unwrap()[0].enabled);
+
+    // 日志：非跟随请求一次性返回记录数组。
+    let records = ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::Logs {
+            unit: "app.service".into(),
+            source: None,
+            lines: 200,
+            follow: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(records.is_array());
+    // 跟随请求必须交给连接处理器，执行器明确拒绝。
+    assert!(
+        ipc::execute(
+            &manager,
+            &metrics,
+            ipc::Action::Logs {
+                unit: "app.service".into(),
+                source: None,
+                lines: 200,
+                follow: true,
+            },
+        )
+        .await
+        .is_err()
+    );
+    // 非法来源在进入日志读取前就被拒绝。
+    assert!(
+        ipc::execute(
+            &manager,
+            &metrics,
+            ipc::Action::Logs {
+                unit: "app.service".into(),
+                source: Some("stdin".into()),
+                lines: 200,
+                follow: false,
+            },
+        )
+        .await
+        .is_err()
+    );
+
+    // 健康检查与资源采集：健康快照按服务返回，资源始终包含宿主机数据。
+    let health = ipc::execute(&manager, &metrics, ipc::Action::HealthStatus)
+        .await
+        .unwrap();
+    assert_eq!(health.as_array().unwrap().len(), 1);
+    let history = ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::HealthHistory {
+            unit: "app.service".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(history.is_array());
+    let snapshot = ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::Metrics {
+            unit: Some("app.service".into()),
+            details: false,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(snapshot["host"]["memory_total"].as_u64().unwrap() > 0);
+    // 未运行的实例没有资源明细。
+    assert!(snapshot["process"].is_null());
+
+    // 删除携带原文校验：冲突时拒绝，匹配时连同启用状态一起清除。
+    assert!(
+        ipc::execute(
+            &manager,
+            &metrics,
+            ipc::Action::Delete {
+                unit: "app.service".into(),
+                stop: false,
+                expected: Some("旧正文".into()),
+            },
+        )
+        .await
+        .is_err()
+    );
+    ipc::execute(
+        &manager,
+        &metrics,
+        ipc::Action::Delete {
+            unit: "app.service".into(),
+            stop: false,
+            expected: Some(BASE.into()),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(manager.status(Some("app.service")).is_err());
+}

@@ -4,8 +4,8 @@
  *
  * 用法：
  *   node scripts/check-version.mjs                       # 校验各清单互相一致
- *   node scripts/check-version.mjs --tag v0.3.0          # 额外核对标签
- *   node scripts/check-version.mjs --tag v0.3.0 --json   # 输出机器可读结果，供工作流解析
+ *   node scripts/check-version.mjs --tag v0.4.0          # 额外核对标签
+ *   node scripts/check-version.mjs --tag v0.4.0 --json   # 输出机器可读结果，供工作流解析
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -119,7 +119,7 @@ function main() {
     problems.push(`清单版本不一致：${versions.map(([name, version]) => `${name}=${version}`).join("，")}`);
   }
 
-  // 标签允许带 v 前缀，比较前统一去掉，v0.3.0 与 0.3.0 两种写法都可以。
+  // 标签允许带 v 前缀，比较前统一去掉，v0.4.0 与 0.4.0 两种写法都可以。
   if (options.tag && options.tag.replace(/^v/i, "") !== expected) {
     problems.push(`标签 ${options.tag} 与清单版本 ${expected} 不一致`);
   }

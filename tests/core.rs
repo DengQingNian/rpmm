@@ -347,14 +347,14 @@ fn start_limit() {
 #[test]
 fn protocol_roundtrip() {
     let req = rpmm::ipc::Request {
-        version: 1,
+        version: rpmm::ipc::VERSION,
         action: rpmm::ipc::Action::Start {
             unit: "app.service".into(),
         },
     };
     let encoded = serde_json::to_string(&req).unwrap();
     let decoded: rpmm::ipc::Request = serde_json::from_str(&encoded).unwrap();
-    assert_eq!(decoded.version, 1);
+    assert_eq!(decoded.version, rpmm::ipc::VERSION);
     assert!(
         serde_json::from_str::<rpmm::ipc::Request>(
             r#"{"version":1,"action":"start","unit":"x.service","unknown":true}"#
