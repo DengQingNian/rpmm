@@ -1,7 +1,7 @@
 import { computed, onMounted, onUnmounted, reactive, watch } from "vue";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useDialog, useMessage } from "naive-ui";
+import { ui } from "../feedback";
 import { applyService, readService, serviceDefaults, serviceText } from "../serviceConfig";
 import {
   DEFAULT_CATEGORY,
@@ -44,10 +44,30 @@ function quote(value: string): string {
   return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n").replaceAll("\r", "\\r")}"`;
 }
 
+/** 界面偏好的存储键。 */
+const PREFERENCE_KEY = "rpmm.ui";
+
+/** 读取界面偏好。参数：无。返回：已保存的偏好；存储不可用或内容损坏时返回默认值。 */
+function readPreferences(): { navCollapsed: boolean } {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(PREFERENCE_KEY) ?? "{}");
+    return { navCollapsed: saved.navCollapsed === true };
+  } catch {
+    return { navCollapsed: false };
+  }
+}
+
+/** 写入界面偏好。参数：preferences 为完整偏好。返回：无；写入失败时静默忽略。 */
+function writePreferences(preferences: { navCollapsed: boolean }): void {
+  try {
+    window.localStorage.setItem(PREFERENCE_KEY, JSON.stringify(preferences));
+  } catch {
+    /* 隐私模式或存储已满时不影响界面使用 */
+  }
+}
+
 /** 管理桌面页面共享状态和后端操作。参数：无。返回：响应式状态、派生值与操作接口。 */
 export function useDesktop() {
-  const message = useMessage();
-  const dialog = useDialog();
   const state = reactive({
     page: "dashboard" as Page,
     statuses: [] as ProcessStatus[],
@@ -100,6 +120,10 @@ export function useDesktop() {
     categories: defaultCategories(),
     expandedCategories: [DEFAULT_CATEGORY],
     categoryVisible: false,
+    /** 左侧导航是否收起为窄栏。 */
+    navCollapsed: readPreferences().navCollapsed,
+    /** 移动端抽屉式导航是否展开。 */
+    navOpen: false,
   });
   let timer = 0;
   let logTimer = 0;
@@ -141,32 +165,24 @@ export function useDesktop() {
 
   /** 提示操作错误。参数：error 为错误值。返回：无。 */
   function report(error: unknown): void {
-    message.error(String(error), { duration: 9000 });
+    ui.toast({ kind: "error", text: String(error) });
   }
 
-  /** 等待确认弹窗结果。参数：title 为标题，content 为说明，positive 为确认文字。返回：是否确认。 */
+  /** 等待确认弹窗结果。参数：title 为标题，content 为说明，positive 为确认文字。
+   * 返回：是否确认；主题为危险操作时确认按钮使用错误色。 */
   function confirm(
     title: string,
     content: string,
     positive: string,
   ): Promise<boolean> {
-    return new Promise((resolve) => {
-      // 所有关闭方式都会完成 Promise；重复关闭不会再次修改业务状态。
-      const instance = dialog.warning({
-        title,
-        content,
-        positiveText: positive,
-        negativeText: "取消",
-        onPositiveClick: () => resolve(true),
-        onNegativeClick: () => resolve(false),
-        onClose: () => resolve(false),
-        onMaskClick: () => resolve(false),
-        onEsc: () => resolve(false),
-      });
-      if (disposed) {
-        instance.destroy();
-        resolve(false);
-      }
+    if (disposed) return Promise.resolve(false);
+    const dangerous = /删除|退出|停止并|放弃/.test(positive);
+    return ui.confirm({
+      title,
+      message: content,
+      confirmLabel: positive,
+      cancelLabel: "取消",
+      destructive: dangerous,
     });
   }
 
@@ -331,7 +347,7 @@ export function useDesktop() {
         unit: state.selected,
         text,
       });
-      if (path) message.success(`日志已保存：${path}`);
+      if (path) ui.toast.success(`日志已保存：${path}`);
     } catch (error) {
       report(error);
     }
@@ -382,7 +398,7 @@ export function useDesktop() {
     state.busy = true;
     try {
       await task();
-      message.success(success);
+      ui.toast.success(success);
       await refresh();
     } catch (error) {
       report(error);
@@ -438,6 +454,7 @@ export function useDesktop() {
   /** 切换页面并保留编辑草稿。参数：page 为页面。返回：无。 */
   async function navigate(page: Page): Promise<void> {
     state.page = page;
+    state.navOpen = false;
     try {
       await refreshLogs();
       await refreshObservability();
@@ -589,7 +606,7 @@ export function useDesktop() {
       .join("\n")
       .trimEnd();
     state.text = `${cleaned}\n\n[Service]\nHealthType=${h.kind}\nHealthPort=${h.port ?? 0}\nHealthUrl=${h.url.trim()}\nHealthTimeoutSec=${h.timeout ?? 1}s\nHealthIntervalSec=${h.interval ?? 10}s\n`;
-    message.info("健康配置已写入草稿，请保存；运行进程重启后使用新配置");
+    ui.toast.info("健康配置已写入草稿，请保存；运行进程重启后使用新配置");
   }
 
   /** 从当前文档解析健康表单。参数：text 为编辑正文。返回：无。
@@ -641,7 +658,7 @@ export function useDesktop() {
   function applyOptions(): void {
     if (locked.value || state.editorLoading || !state.document) return;
     state.text = applyService(state.text, state.serviceDraft);
-    message.info("关联与运行选项已写入草稿，请保存配置");
+    ui.toast.info("关联与运行选项已写入草稿，请保存配置");
   }
 
   /** 通过系统对话框选择下次启动的数据目录。参数：无。返回：无。 */
@@ -657,7 +674,7 @@ export function useDesktop() {
     if (locked.value || !state.exportUnits.length) return;
     await mutate(async () => {
       const path = await call<string | null>("export_configs", { units: state.exportUnits });
-      if (path) message.info(`配置已导出：${path}`);
+      if (path) ui.toast.info(`配置已导出：${path}`);
     }, "导出操作结束");
   }
 
@@ -739,7 +756,7 @@ export function useDesktop() {
     expandCategory(trimmed);
     state.categoryVisible = false;
     if (!(await persistCategories())) return false;
-    message.success(`分类已创建：${trimmed}`);
+    ui.toast.success(`分类已创建：${trimmed}`);
     return true;
   }
 
@@ -763,7 +780,7 @@ export function useDesktop() {
     state.expandedCategories = state.expandedCategories.filter(
       (item) => item !== name,
     );
-    if (await persistCategories()) message.success(`分类已删除：${name}`);
+    if (await persistCategories()) ui.toast.success(`分类已删除：${name}`);
   }
 
   /** 把子进程移动到指定分类。参数：unit 为子进程名称，category 为分类名称。返回：无。 */
@@ -777,7 +794,7 @@ export function useDesktop() {
     state.categories = assignUnit(state.categories, unit, category);
     // 展开目标分类，让移动结果可见。
     expandCategory(category);
-    if (await persistCategories()) message.success(`已移动到「${category}」`);
+    if (await persistCategories()) ui.toast.success(`已移动到「${category}」`);
   }
 
   /** 安装独立日志轮询。参数：无。返回：无；零间隔为暂停。 */
@@ -853,8 +870,14 @@ export function useDesktop() {
       const notice = await call<string | null>("set_boot_autostart", { enabled });
       state.settings = await call<Settings>("settings");
       // 本机控制台仍在托管同一数据目录时，守护进程要等控制台退出或下次开机才接管。
-      if (notice) message.warning(notice, { duration: 10000 });
+      if (notice) ui.toast.warning(notice);
     }, enabled ? "已注册开机自启" : "已取消开机自启");
+  }
+
+  /** 收起或展开左侧导航并保存偏好。参数：无。返回：无。 */
+  function toggleNav(): void {
+    state.navCollapsed = !state.navCollapsed;
+    writePreferences({ navCollapsed: state.navCollapsed });
   }
 
   /** 隐藏到托盘。参数：无。返回：无。 */
@@ -892,7 +915,7 @@ export function useDesktop() {
         state.quitting = true;
         window.clearInterval(timer);
         window.clearInterval(logTimer);
-        message.info("正在停止所有子进程，完成后自动退出", { duration: 0 });
+        ui.toast.info("正在停止所有子进程，完成后自动退出", { sticky: true });
       });
       if (disposed) {
         unlisten();
@@ -965,5 +988,6 @@ export function useDesktop() {
     toggleBoot,
     hide,
     quit,
+    toggleNav,
   };
 }

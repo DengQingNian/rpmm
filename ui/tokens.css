@@ -1,0 +1,219 @@
+/*
+ * Material Design 3 设计令牌。
+ * 颜色取自以深松绿为种子的色调色板（HCT 近似），浅色与深色两套方案
+ * 由 index.html 中的 data-theme 切换，全部组件只引用这里的语义令牌。
+ */
+:root {
+  color-scheme: light;
+
+  /* ---- 色彩角色：主色 ---- */
+  --md-sys-color-primary: #2b6a4c;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-primary-container: #aff1cd;
+  --md-sys-color-on-primary-container: #002112;
+  --md-sys-color-inverse-primary: #93d4b1;
+
+  /* ---- 色彩角色：次色 ---- */
+  --md-sys-color-secondary: #506358;
+  --md-sys-color-on-secondary: #ffffff;
+  --md-sys-color-secondary-container: #d2e8db;
+  --md-sys-color-on-secondary-container: #0f1f16;
+
+  /* ---- 色彩角色：第三色 ---- */
+  --md-sys-color-tertiary: #8c4d3e;
+  --md-sys-color-on-tertiary: #ffffff;
+  --md-sys-color-tertiary-container: #ffdbd1;
+  --md-sys-color-on-tertiary-container: #370e00;
+
+  /* ---- 色彩角色：状态色 ---- */
+  --md-sys-color-error: #b3261e;
+  --md-sys-color-on-error: #ffffff;
+  --md-sys-color-error-container: #f9dedc;
+  --md-sys-color-on-error-container: #410e0b;
+  --md-sys-color-success: #2b6a4c;
+  --md-sys-color-on-success: #ffffff;
+  --md-sys-color-success-container: #c8f2d9;
+  --md-sys-color-on-success-container: #002112;
+  --md-sys-color-warning: #8c4d3e;
+  --md-sys-color-on-warning: #ffffff;
+  --md-sys-color-warning-container: #ffdbd1;
+  --md-sys-color-on-warning-container: #370e00;
+
+  /* ---- 色彩角色：表面 ---- */
+  --md-sys-color-surface: #fafcfa;
+  --md-sys-color-on-surface: #1a1c1b;
+  --md-sys-color-on-surface-variant: #3f4a43;
+  --md-sys-color-surface-dim: #d5dcd7;
+  --md-sys-color-surface-bright: #fafcfa;
+  --md-sys-color-surface-container-lowest: #ffffff;
+  --md-sys-color-surface-container-low: #f5f8f6;
+  --md-sys-color-surface-container: #f0f4f1;
+  --md-sys-color-surface-container-high: #ebf1ed;
+  --md-sys-color-surface-container-highest: #e6ede9;
+  --md-sys-color-inverse-surface: #2e312f;
+  --md-sys-color-inverse-on-surface: #eef1ef;
+
+  /* ---- 色彩角色：描边 ---- */
+  --md-sys-color-outline: #707974;
+  --md-sys-color-outline-variant: #c3cec7;
+
+  /* ---- 色彩角色：固定色 ---- */
+  --md-sys-color-primary-fixed: #aff1cd;
+  --md-sys-color-primary-fixed-dim: #93d4b1;
+  --md-sys-color-on-primary-fixed: #002112;
+  --md-sys-color-on-primary-fixed-variant: #0d5135;
+  --md-sys-color-secondary-fixed: #d2e8db;
+  --md-sys-color-secondary-fixed-dim: #b7cbbf;
+  --md-sys-color-on-secondary-fixed: #0f1f16;
+  --md-sys-color-on-secondary-fixed-variant: #394b41;
+  --md-sys-color-tertiary-fixed: #ffdbd1;
+  --md-sys-color-tertiary-fixed-dim: #ffb5a1;
+  --md-sys-color-on-tertiary-fixed: #370e00;
+  --md-sys-color-on-tertiary-fixed-variant: #703628;
+
+  --md-sys-color-scrim: #000000;
+  --md-sys-color-shadow: #000000;
+
+  /* ---- 状态层不透明度 ---- */
+  --md-sys-state-hover-opacity: 0.08;
+  --md-sys-state-focus-opacity: 0.1;
+  --md-sys-state-pressed-opacity: 0.1;
+  --md-sys-state-dragged-opacity: 0.16;
+
+  /* ---- 字体 ---- */
+  --md-ref-typeface-brand: "Roboto", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --md-ref-typeface-plain: "Roboto", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --md-ref-typeface-mono: "Cascadia Code", "Consolas", "SFMono-Regular", "Microsoft YaHei UI", monospace;
+
+  --md-sys-typescale-display-large: 400 3.5625rem/4rem var(--md-ref-typeface-brand);
+  --md-sys-typescale-display-medium: 400 2.8125rem/3.25rem var(--md-ref-typeface-brand);
+  --md-sys-typescale-display-small: 400 2.25rem/2.75rem var(--md-ref-typeface-brand);
+  --md-sys-typescale-headline-large: 400 2rem/2.5rem var(--md-ref-typeface-brand);
+  --md-sys-typescale-headline-medium: 400 1.75rem/2.25rem var(--md-ref-typeface-brand);
+  --md-sys-typescale-headline-small: 400 1.5rem/2rem var(--md-ref-typeface-brand);
+  --md-sys-typescale-title-large: 400 1.375rem/1.75rem var(--md-ref-typeface-brand);
+  --md-sys-typescale-title-medium: 500 1rem/1.5rem var(--md-ref-typeface-plain);
+  --md-sys-typescale-title-small: 500 0.875rem/1.25rem var(--md-ref-typeface-plain);
+  --md-sys-typescale-body-large: 400 1rem/1.5rem var(--md-ref-typeface-plain);
+  --md-sys-typescale-body-medium: 400 0.875rem/1.25rem var(--md-ref-typeface-plain);
+  --md-sys-typescale-body-small: 400 0.75rem/1rem var(--md-ref-typeface-plain);
+  --md-sys-typescale-label-large: 500 0.875rem/1.25rem var(--md-ref-typeface-plain);
+  --md-sys-typescale-label-medium: 500 0.75rem/1rem var(--md-ref-typeface-plain);
+  --md-sys-typescale-label-small: 500 0.6875rem/1rem var(--md-ref-typeface-plain);
+
+  /* ---- 形状 ---- */
+  --md-sys-shape-corner-none: 0;
+  --md-sys-shape-corner-extra-small: 4px;
+  --md-sys-shape-corner-small: 8px;
+  --md-sys-shape-corner-medium: 12px;
+  --md-sys-shape-corner-large: 16px;
+  --md-sys-shape-corner-large-increased: 20px;
+  --md-sys-shape-corner-extra-large: 28px;
+  --md-sys-shape-corner-extra-large-increased: 32px;
+  --md-sys-shape-corner-extra-extra-large: 48px;
+  --md-sys-shape-corner-full: 9999px;
+
+  /* ---- 海拔（阴影只在浮层上使用，常规层级用色调表面表达） ---- */
+  --md-sys-elevation-level0: none;
+  --md-sys-elevation-level1: 0 1px 2px rgb(0 0 0 / 0.3), 0 1px 3px 1px rgb(0 0 0 / 0.15);
+  --md-sys-elevation-level2: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px 2px rgb(0 0 0 / 0.15);
+  --md-sys-elevation-level3: 0 4px 8px 3px rgb(0 0 0 / 0.15), 0 1px 3px rgb(0 0 0 / 0.3);
+  --md-sys-elevation-level4: 0 6px 10px 4px rgb(0 0 0 / 0.15), 0 2px 3px rgb(0 0 0 / 0.3);
+  --md-sys-elevation-level5: 0 8px 12px 6px rgb(0 0 0 / 0.15), 0 4px 4px rgb(0 0 0 / 0.3);
+
+  /* ---- 动效 ---- */
+  --md-sys-motion-easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-emphasized-decelerate: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --md-sys-motion-easing-emphasized-accelerate: cubic-bezier(0.3, 0, 0.8, 0.15);
+  --md-sys-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --md-sys-motion-easing-standard-decelerate: cubic-bezier(0, 0, 0, 1);
+  --md-sys-motion-easing-standard-accelerate: cubic-bezier(0.3, 0, 1, 1);
+  --md-sys-motion-duration-short1: 50ms;
+  --md-sys-motion-duration-short2: 100ms;
+  --md-sys-motion-duration-short3: 150ms;
+  --md-sys-motion-duration-short4: 200ms;
+  --md-sys-motion-duration-medium1: 250ms;
+  --md-sys-motion-duration-medium2: 300ms;
+  --md-sys-motion-duration-medium3: 350ms;
+  --md-sys-motion-duration-medium4: 400ms;
+  --md-sys-motion-duration-long1: 450ms;
+  --md-sys-motion-duration-long2: 500ms;
+
+  /* ---- 8dp 间距系统 ---- */
+  --md-sys-space-1: 4px;
+  --md-sys-space-2: 8px;
+  --md-sys-space-3: 12px;
+  --md-sys-space-4: 16px;
+  --md-sys-space-5: 24px;
+  --md-sys-space-6: 32px;
+  --md-sys-space-7: 40px;
+  --md-sys-space-8: 48px;
+
+  /* ---- 布局 ---- */
+  --app-rail-width: 96px;
+  --app-bar-height: 64px;
+  --app-content-max: 1120px;
+}
+
+/* 深色方案：同一套语义角色，按深色色调重新映射。 */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --md-sys-color-primary: #93d4b1;
+  --md-sys-color-on-primary: #003922;
+  --md-sys-color-primary-container: #0d5135;
+  --md-sys-color-on-primary-container: #aff1cd;
+  --md-sys-color-inverse-primary: #2b6a4c;
+
+  --md-sys-color-secondary: #b7cbbf;
+  --md-sys-color-on-secondary: #23342b;
+  --md-sys-color-secondary-container: #394b41;
+  --md-sys-color-on-secondary-container: #d2e8db;
+
+  --md-sys-color-tertiary: #ffb5a1;
+  --md-sys-color-on-tertiary: #561f13;
+  --md-sys-color-tertiary-container: #703628;
+  --md-sys-color-on-tertiary-container: #ffdbd1;
+
+  --md-sys-color-error: #f2b8b5;
+  --md-sys-color-on-error: #601410;
+  --md-sys-color-error-container: #8c1d18;
+  --md-sys-color-on-error-container: #f9dedc;
+  --md-sys-color-success: #93d4b1;
+  --md-sys-color-on-success: #003922;
+  --md-sys-color-success-container: #0d5135;
+  --md-sys-color-on-success-container: #aff1cd;
+  --md-sys-color-warning: #ffb5a1;
+  --md-sys-color-on-warning: #561f13;
+  --md-sys-color-warning-container: #703628;
+  --md-sys-color-on-warning-container: #ffdbd1;
+
+  --md-sys-color-surface: #0f1411;
+  --md-sys-color-on-surface: #dfe4df;
+  --md-sys-color-on-surface-variant: #bcc5bf;
+  --md-sys-color-surface-dim: #0f1411;
+  --md-sys-color-surface-bright: #353c37;
+  --md-sys-color-surface-container-lowest: #0a0f0c;
+  --md-sys-color-surface-container-low: #121714;
+  --md-sys-color-surface-container: #161c19;
+  --md-sys-color-surface-container-high: #1f2621;
+  --md-sys-color-surface-container-highest: #293029;
+  --md-sys-color-inverse-surface: #dfe4df;
+  --md-sys-color-inverse-on-surface: #2e312f;
+
+  --md-sys-color-outline: #89948d;
+  --md-sys-color-outline-variant: #404943;
+
+  --md-sys-color-primary-fixed: #aff1cd;
+  --md-sys-color-primary-fixed-dim: #93d4b1;
+  --md-sys-color-on-primary-fixed: #002112;
+  --md-sys-color-on-primary-fixed-variant: #0d5135;
+  --md-sys-color-secondary-fixed: #d2e8db;
+  --md-sys-color-secondary-fixed-dim: #b7cbbf;
+  --md-sys-color-on-secondary-fixed: #0f1f16;
+  --md-sys-color-on-secondary-fixed-variant: #394b41;
+  --md-sys-color-tertiary-fixed: #ffdbd1;
+  --md-sys-color-tertiary-fixed-dim: #ffb5a1;
+  --md-sys-color-on-tertiary-fixed: #370e00;
+  --md-sys-color-on-tertiary-fixed-variant: #703628;
+}

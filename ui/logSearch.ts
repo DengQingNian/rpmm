@@ -1,60 +1,86 @@
-import type { LogRecord } from "./types";
-/** 一条搜索结果及其原始位置。 */
+/** 单条日志命中结果。context 表示上下文行，matched 表示命中行。 */
 export interface LogRow {
+  /** 唯一键，虚拟列表据此复用节点。 */
   key: string;
+  /** 原始行号，从 0 开始。 */
   index: number;
-  record: LogRecord;
+  record: { time: string; source: string; text: string };
   matched: boolean;
+  /** 上下文片段之间插入的分隔行。 */
   separator: boolean;
 }
-/** 检索日志并合并相邻上下文范围。参数：records 为最近日志，query 为关键字，regex/ignoreCase 为匹配方式，context 为 -C 前后行数。返回：结果、命中数量及表达式错误。
- * 上下文从来源筛选后的最近记录中取，重叠范围只显示一次。 */
+
+export interface LogSearchResult {
+  rows: LogRow[];
+  matches: number;
+  error: string;
+}
+
+/** 编译用户输入的搜索文本。参数：query 为关键字，regex 表示按正则解释，ignoreCase 表示忽略大小写。
+ * 返回：正则对象或 null（空查询），非法正则直接抛出异常。 */
+function compile(
+  query: string,
+  regex: boolean,
+  ignoreCase: boolean,
+): RegExp | null {
+  const text = query.trim();
+  if (!text) return null;
+  // 关键字按字面匹配，避免用户输入 . * 等字符意外扩大范围。
+  const pattern = regex ? text : text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(pattern, ignoreCase ? "i" : "");
+}
+
+/** 在日志中搜索并附带前后上下文。参数：records 为原始日志、query 为关键字、regex 与 ignoreCase 为匹配选项、context 为前后行数。
+ * 返回：可直接渲染的行集合；正则非法时返回错误说明。 */
 export function searchLogs(
-  records: LogRecord[],
+  records: { time: string; source: string; text: string }[],
   query: string,
   regex: boolean,
   ignoreCase: boolean,
   context: number,
-): { rows: LogRow[]; matches: number; error: string } {
-  let expression: RegExp | undefined;
+): LogSearchResult {
+  let pattern: RegExp | null;
   try {
-    if (query && regex) expression = new RegExp(query, ignoreCase ? "i" : "");
-  } catch (error) {
-    return { rows: [], matches: 0, error: `正则表达式错误：${String(error)}` };
+    pattern = compile(query, regex, ignoreCase);
+  } catch {
+    return { rows: [], matches: 0, error: "正则表达式无效" };
   }
-  const needle = ignoreCase ? query.toLocaleLowerCase() : query;
-  const hits = records.map(
-    (record) =>
-      !query ||
-      (expression
-        ? expression.test(record.text)
-        : (ignoreCase ? record.text.toLocaleLowerCase() : record.text).includes(
-            needle,
-          )),
-  );
-  const included = new Set<number>();
-  const radius = Math.min(100, Math.max(0, Math.floor(context || 0)));
-  hits.forEach((hit, index) => {
-    if (!hit) return;
+  if (!pattern) {
+    return {
+      rows: records.map((record, index) => ({
+        key: `${index}`,
+        index,
+        record,
+        matched: false,
+        separator: false,
+      })),
+      matches: 0,
+      error: "",
+    };
+  }
+  const keep = new Set<number>();
+  let matches = 0;
+  records.forEach((record, index) => {
+    if (!pattern!.test(record.text)) return;
+    matches += 1;
     for (
-      let i = Math.max(0, index - radius);
-      i <= Math.min(records.length - 1, index + radius);
-      i++
+      let cursor = Math.max(0, index - context);
+      cursor <= Math.min(records.length - 1, index + context);
+      cursor += 1
     )
-      included.add(i);
+      keep.add(cursor);
   });
-  let previous = -1;
   const rows: LogRow[] = [];
-  for (const index of [...included].sort((a, b) => a - b)) {
-    const record = records[index]!;
+  let previous = -2;
+  for (const index of [...keep].sort((a, b) => a - b)) {
     rows.push({
-      key: `${record.time}-${record.instance}-${index}`,
+      key: `${index}`,
       index,
-      record,
-      matched: !!query && hits[index]!,
-      separator: previous >= 0 && index > previous + 1,
+      record: records[index]!,
+      matched: pattern.test(records[index]!.text),
+      separator: index !== previous + 1,
     });
     previous = index;
   }
-  return { rows, matches: query ? hits.filter(Boolean).length : 0, error: "" };
+  return { rows, matches, error: "" };
 }

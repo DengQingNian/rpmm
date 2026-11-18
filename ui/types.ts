@@ -165,13 +165,14 @@ export const stateLabels: Record<string, string> = {
 export function label(state: string): string {
   return stateLabels[state] ?? state;
 }
-/** 匹配状态标签颜色。参数：state 为进程状态。返回：Naive UI 标签类型。 */
-export function statusType(
-  state: string,
-): "success" | "error" | "warning" | "default" {
+/** 状态语义，决定状态点的颜色组合。 */
+export type StatusTone = "success" | "error" | "warning" | "neutral";
+
+/** 匹配状态语义。参数：state 为进程状态。返回：状态语义，用于状态徽章与圆点。 */
+export function statusTone(state: string): StatusTone {
   // 中间状态统一使用警示色，未知状态保留中性色。
   if (state === "active") return "success";
   if (state === "failed") return "error";
   if (["activating", "deactivating"].includes(state)) return "warning";
-  return "default";
+  return "neutral";
 }

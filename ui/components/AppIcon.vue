@@ -5,8 +5,8 @@ import { icons, type IconName } from "../icons";
 withDefaults(
   defineProps<{ name: IconName; size?: number; strokeWidth?: number }>(),
   {
-    size: 18,
-    strokeWidth: 1.8,
+    size: 20,
+    strokeWidth: 1.75,
   },
 );
 </script>

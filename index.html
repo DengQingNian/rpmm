@@ -1,10 +1,27 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/svg+xml" href="/ui/assets/icon-small.svg" />
     <title>rpmm · 进程控制台</title>
+    <script>
+      // 在首帧前确定主题，避免深色系统下先闪出浅色界面。
+      (function () {
+        var saved = null;
+        try {
+          saved = localStorage.getItem("rpmm.theme");
+        } catch (error) {
+          saved = null;
+        }
+        var dark =
+          saved === "dark" ||
+          (saved !== "light" &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+        document.documentElement.style.colorScheme = dark ? "dark" : "light";
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>
