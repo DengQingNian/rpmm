@@ -2549,7 +2549,6 @@ button {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
-
 @media (max-width: 1240px) {
   .metric-grid,
   .metric-grid--compact {
@@ -2557,6 +2556,75 @@ button {
   }
   .settings-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+  /* 日志头部在窄容器下换行，标题最多两行，操作按钮靠右。 */
+  .log-viewer__head {
+    flex-wrap: wrap;
+  }
+  .log-viewer__title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+  }
+  .log-viewer__actions {
+    margin-left: auto;
+  }
+  .log-viewer__controls > .md-select {
+    flex: 0 1 150px;
+  }
+  .log-viewer__search > .md-checkbox {
+    flex: 0 0 auto;
+  }
+  /* 标签条只在放不下时横向滚动；收缩保护避免子项撑破容器导致整页横向滚动。 */
+  .md-tabs {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .md-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .md-tabs__tab {
+    min-width: 0;
+    flex: 0 1 auto;
+    padding: 0 var(--md-sys-space-3);
+  }
+  .navigation,
+  .app-shell__body,
+  .panel,
+  .detail-panel,
+  .config-tree,
+  .editor,
+  .process-panel,
+  .settings-panel,
+  .accordion,
+  .log-viewer,
+  .detail-panel__body,
+  .metric-card__body,
+  .setting,
+  .setting__text,
+  .md-alert,
+  .md-alert__body,
+  .form-section,
+  .info-grid__item,
+  .disk-card,
+  .chart-panel {
+    min-width: 0;
+  }
+  /* 进程列表与配置目录在中等宽度下收窄，详情区优先获得空间。 */
+  .monitor-page {
+    grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  }
+  .config-workspace {
+    grid-template-columns: minmax(210px, 250px) minmax(0, 1fr);
+  }
+  .detail-panel__actions {
+    gap: var(--md-sys-space-2);
+  }
+  .detail-panel__actions .md-button {
+    height: 32px;
+    padding: 0 16px;
   }
 }
 
@@ -2569,6 +2637,27 @@ button {
   }
   .config-workspace {
     grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  }
+}
+
+/* 极窄宽度下让同步时间折到第二行，避免标题被挤没。 */
+@media (max-width: 1000px) {
+  .top-app-bar {
+    flex-wrap: wrap;
+    row-gap: var(--md-sys-space-2);
+  }
+  .top-app-bar__titles {
+    flex: 1 1 160px;
+    min-width: 140px;
+    padding-left: var(--md-sys-space-1);
+  }
+  .top-app-bar__actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .sync-chip {
+    order: 3;
+    margin-left: 0;
   }
 }
 
