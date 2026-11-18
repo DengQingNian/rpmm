@@ -1374,17 +1374,6 @@ button {
 
 .log-line .log-source--stdout { color: var(--md-sys-color-on-surface-variant); }
 
-.app-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--md-sys-space-3);
-  padding: var(--md-sys-space-3) var(--md-sys-space-5);
-  border-top: 1px solid var(--md-sys-color-outline-variant);
-  color: var(--md-sys-color-on-surface-variant);
-  font: var(--md-sys-typescale-body-small);
-}
-
 /* ---------------- 通用面板 ---------------- */
 .panel {
   display: flex;

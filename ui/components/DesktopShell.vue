@@ -10,7 +10,6 @@ import AppIcon from "./AppIcon.vue";
 import ConfigPage from "./ConfigPage.vue";
 import DashboardPage from "./DashboardPage.vue";
 import MdAlert from "./MdAlert.vue";
-import MdBadge from "./MdBadge.vue";
 import MdButton from "./MdButton.vue";
 import MdDialog from "./MdDialog.vue";
 import MdIconButton from "./MdIconButton.vue";
@@ -182,7 +181,7 @@ async function submitCategory(): Promise<void> {
               ? "正在停止子进程并退出…"
               : desktop.state.busy
                 ? "正在执行操作…"
-                : "当前用户会话 · 本机托管"
+                : "管理器已就绪 · 本机托管"
           }}
         </p>
       </div>
@@ -330,12 +329,5 @@ async function submitCategory(): Promise<void> {
         />
       </form>
     </MdDialog>
-
-    <footer class="app-footer">
-      <span>当前用户会话</span>
-      <MdBadge :tone="desktop.state.connected ? 'success' : 'neutral'">
-        {{ desktop.preview ? "预览模式" : desktop.state.connected ? "在线" : "离线" }}
-      </MdBadge>
-    </footer>
   </div>
 </template>
